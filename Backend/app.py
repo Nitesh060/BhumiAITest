@@ -1,0 +1,1015 @@
+"""
+app.py
+======
+Flask REST API for the FarmScore agricultural-suitability platform.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+import time
+from typing import Optional
+
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request, Response
+from flask_cors import CORS
+
+from earth_engine_service import fetch_farm_data, initialise_earth_engine
+from scoring import calculate_score
+from crop_recommendation import recommend_crop
+from gemini_service import generate_insight, generate_chat_reply, diagnose_crop_image, generate_spectral_insight, generate_farm_advisor, generate_risk_analysis
+from spectral_service import calculate_spectral_intelligence
+from enrichment_service import (
+    fetch_soil_type,
+    fetch_adjacent_land_cover,
+    fetch_cropping_intensity,
+    fetch_irrigation_signal,
+    fetch_temperature_annual_range,
+    fetch_prosperity_proxy,
+    fetch_nearest_water_body_signal,
+    estimate_agro_ecological_zone,
+    fetch_cropping_history,
+    fetch_drought_instances,
+    fetch_village_population,
+    fetch_topography,
+    fetch_ndvi_heatmap,
+)
+from govt_data_service import fetch_mandi_price, fetch_district_yield_comparison, fetch_major_crops_in_region
+from glossary import GLOSSARY_TERMS
+from pdf_report import generate_pdf_report
+import whatsapp_service
+from yield_prediction import estimate_yield, compute_polygon_area_ha
+import db as db_module
+import farm_management_service as fms
+from spectral_indices import fetch_extended_indices, fetch_sar_moisture
+from historical_timeline_service import fetch_ndvi_historical_timeline, fetch_before_after_comparison
+from enrichment_service import fetch_vegetation_heatmap
+from crop_intelligence_service import (
+    identify_crop_heuristic,
+    detect_growth_stage,
+    estimate_sowing_harvest,
+    detect_crop_rotation,
+    CROP_CALENDAR,
+)
+from enrichment_service import fetch_cropping_intensity as _fetch_cropping_intensity_for_ci
+from enrichment_service import fetch_cropping_history as _fetch_cropping_history_for_ci
+from weather_soil_terrain_service import (
+    fetch_historical_weather,
+    fetch_soil_health,
+    fetch_soil_moisture,
+    fetch_flood_risk,
+)
+from enrichment_service import fetch_topography as _fetch_topography_for_flood
+from spectral_indices import fetch_sar_moisture as _fetch_sar_for_flood
+from credit_intelligence_service import (
+    estimate_income,
+    compute_bcis_score,
+    recommend_loan_ceiling,
+    auto_freeze_check,
+)
+
+load_dotenv()
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+PORT = int(os.getenv("PORT", 5000))
+HOST = os.getenv("HOST", "0.0.0.0")
+DEBUG = os.getenv("FLASK_DEBUG", "0") == "1"
+
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout,
+)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
+
+try:
+    db_module.init_db()
+except Exception:
+    logger.exception("init_db() failed at startup — Farm Management endpoints will report 'not configured'")
+
+
+@app.before_request
+def _ensure_ee_init():
+    try:
+        initialise_earth_engine()
+    except Exception as exc:
+        logger.error("Earth Engine init failed: %s", exc)
+        if request.endpoint != "health_check":
+            raise
+
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "ok", "service": "FarmScore API"}), 200
+
+
+def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) -> dict:
+    """Core FarmScore computation — satellite fetch, scoring, crop
+    recommendation, climate risk, enrichment modules, AI insight.
+    Used by both /calculate (web) and the WhatsApp webhook, so the two
+    channels always return identical numbers for the same coordinates.
+    Raises on hard failures (satellite fetch / scoring); callers decide
+    how to surface that (HTTP error vs a WhatsApp text reply).
+    """
+    t0 = time.time()
+    logger.info("compute_farmscore lat=%.5f lng=%.5f", lat, lng)
+
+    satellite_data = fetch_farm_data(lat=lat, lng=lng, polygon=polygon)
+
+    result = calculate_score(
+        ndvi=satellite_data.get("ndvi"),
+        ndmi=satellite_data.get("ndmi"),
+        rainfall=satellite_data.get("rainfall"),
+        temperature=satellite_data.get("temperature"),
+        groundwater=satellite_data.get("groundwater"),
+    )
+    crop_result = recommend_crop(
+        satellite_data.get("ndvi"),
+        satellite_data.get("ndmi"),
+        satellite_data.get("rainfall"),
+        satellite_data.get("temperature"),
+        satellite_data.get("groundwater"),
+    )
+
+    elapsed = round(time.time() - t0, 2)
+    logger.info("Score=%d Grade=%s elapsed=%.2fs", result["final_score"], result["grade"], elapsed)
+
+    # ---- Climate risk assessment — rule-based on the REAL rainfall/temperature
+    # values just fetched, not a model prediction. Thresholds are simple and
+    # transparent so the "why" is always visible. ----
+    def _assess_climate_risk(rainfall_mm_day, temp_c):
+        flags = []
+        if rainfall_mm_day is not None:
+            if rainfall_mm_day < 2:
+                flags.append("Low rainfall for the growing season")
+            elif rainfall_mm_day > 15:
+                flags.append("Very high rainfall — waterlogging risk")
+        if temp_c is not None:
+            if temp_c > 35:
+                flags.append("High temperature — heat stress risk")
+            elif temp_c < 15:
+                flags.append("Low temperature for most kharif crops")
+
+        if not flags:
+            level = "Low"
+        elif len(flags) == 1:
+            level = "Moderate"
+        else:
+            level = "High"
+
+        return {"level": level, "flags": flags}
+
+    climate_risk = _assess_climate_risk(
+        satellite_data.get("rainfall"), satellite_data.get("temperature")
+    )
+
+    # ---- Enrichment modules (SatSource parity) — run concurrently, each
+    # fails soft so one bad dataset never breaks the whole response. ----
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
+    enrichment: dict = {}
+
+    def _safe(name, fn, *args):
+        try:
+            return name, fn(*args)
+        except Exception:
+            logger.exception("Enrichment '%s' failed (non-fatal)", name)
+            return name, None
+
+    with _TPE(max_workers=11) as pool:
+        futures = [
+            pool.submit(_safe, "soil_type", fetch_soil_type, lat, lng, polygon),
+            pool.submit(_safe, "adjacent_land_cover", fetch_adjacent_land_cover, lat, lng, polygon),
+            pool.submit(_safe, "cropping_intensity", fetch_cropping_intensity, lat, lng, polygon),
+            pool.submit(_safe, "irrigation", fetch_irrigation_signal, lat, lng, polygon),
+            pool.submit(_safe, "temperature_annual_range", fetch_temperature_annual_range, lat, lng, polygon),
+            pool.submit(_safe, "regional_prosperity", fetch_prosperity_proxy, lat, lng, polygon),
+            pool.submit(_safe, "nearest_water_body", fetch_nearest_water_body_signal, lat, lng, polygon),
+            pool.submit(_safe, "cropping_history", fetch_cropping_history, lat, lng, polygon),
+            pool.submit(_safe, "topography", fetch_topography, lat, lng, polygon),
+            pool.submit(_safe, "village_population", fetch_village_population, lat, lng),
+            pool.submit(_safe, "drought_instances", fetch_drought_instances, lat, lng),
+        ]
+        for f in futures:
+            key, val = f.result()
+            enrichment[key] = val
+
+    # AEZ is cheap (no GEE call) — compute directly from data already fetched
+    enrichment["agro_ecological_zone"] = estimate_agro_ecological_zone(
+        satellite_data.get("rainfall"), satellite_data.get("temperature")
+    )
+
+    # ---- Yield Prediction (formula-based proxy, see yield_prediction.py) ----
+    # Uses the top-recommended crop + this farm's own NDVI. Area comes from
+    # the drawn polygon if one exists; without it, only per-hectare yield
+    # is estimated (no total tonnage).
+    try:
+        top_crop_name = crop_result["primary"]["crop"] if crop_result.get("primary") else None
+        area_ha = compute_polygon_area_ha(polygon) if polygon else None
+        yield_prediction = estimate_yield(top_crop_name, satellite_data.get("ndvi"), area_ha)
+    except Exception:
+        logger.exception("Yield prediction failed (non-fatal)")
+        yield_prediction = None
+
+    response_payload = {
+        "score": result["final_score"],
+        "grade": result["grade"],
+        "components": result["components"],
+        "recommended_crops": crop_result,
+        "satellite_meta": satellite_data.get("satellite_meta"),
+        "ndvi_trend": satellite_data.get("ndvi_trend"),
+        "ndwi": satellite_data.get("ndwi"),
+        "rainfall_monthly": satellite_data.get("rainfall_monthly"),
+        "groundwater_trend": satellite_data.get("groundwater_trend"),
+        "climate_risk": climate_risk,
+        "coordinates": {"lat": lat, "lng": lng},
+        "enrichment": enrichment,
+        "yield_prediction": yield_prediction,
+        "elapsed_seconds": elapsed,
+    }
+
+    # AI insight is generated from the payload above ONLY — grounded in
+    # real, already-computed numbers. If it fails or no key is set, the
+    # rest of the response is returned unaffected.
+    try:
+        ai_insight = generate_insight({**response_payload, "climate_risk": climate_risk})
+    except Exception:
+        logger.exception("AI insight generation failed (non-fatal)")
+        ai_insight = None
+
+    response_payload["ai_insight"] = ai_insight
+    return response_payload
+
+
+@app.route("/calculate", methods=["POST"])
+def calculate():
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "Request body must be valid JSON"}), 400
+
+    lat = body.get("lat")
+    lng = body.get("lng")
+    polygon = body.get("polygon")
+
+    if lat is None or lng is None:
+        return jsonify({"error": "Both 'lat' and 'lng' are required"}), 400
+
+    try:
+        lat = float(lat)
+        lng = float(lng)
+    except (TypeError, ValueError):
+        return jsonify({"error": "'lat' and 'lng' must be numbers"}), 400
+
+    if not (-90 <= lat <= 90):
+        return jsonify({"error": f"Latitude out of range: {lat}"}), 400
+    if not (-180 <= lng <= 180):
+        return jsonify({"error": f"Longitude out of range: {lng}"}), 400
+
+    try:
+        response_payload = compute_farmscore(lat, lng, polygon)
+    except Exception as exc:
+        logger.exception("compute_farmscore failed")
+        return jsonify({"error": "Failed to compute FarmScore", "detail": str(exc)}), 502
+
+    return jsonify(response_payload), 200
+
+
+@app.route("/spectral", methods=["POST"])
+def spectral():
+    """Hyperspectral-style crop intelligence — real Sentinel-2 multispectral
+    proxy indices (NDVI/NDRE/GNDVI/NDMI/MSI), a 0-100 Spectral Health
+    Score, rule-based flags, and grounded AI (or rule-based fallback)
+    irrigation/fertilization/crop-management recommendations. See
+    spectral_service.py for the honesty note on why this uses
+    multispectral proxies rather than claiming true hyperspectral data.
+    """
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "Request body must be valid JSON"}), 400
+
+    lat = body.get("lat")
+    lng = body.get("lng")
+    polygon = body.get("polygon")
+
+    if lat is None or lng is None:
+        return jsonify({"error": "Both 'lat' and 'lng' are required"}), 400
+
+    try:
+        lat = float(lat)
+        lng = float(lng)
+    except (TypeError, ValueError):
+        return jsonify({"error": "'lat' and 'lng' must be numbers"}), 400
+
+    if not (-90 <= lat <= 90):
+        return jsonify({"error": f"Latitude out of range: {lat}"}), 400
+    if not (-180 <= lng <= 180):
+        return jsonify({"error": f"Longitude out of range: {lng}"}), 400
+
+    t0 = time.time()
+    logger.info("spectral lat=%.5f lng=%.5f", lat, lng)
+
+    try:
+        spectral_result = calculate_spectral_intelligence(lat=lat, lng=lng, polygon=polygon)
+    except Exception as exc:
+        logger.exception("Spectral intelligence computation failed")
+        return jsonify({"error": "Failed to compute spectral intelligence", "detail": str(exc)}), 502
+
+    try:
+        spectral_result["recommendations"] = generate_spectral_insight(spectral_result)
+    except Exception:
+        logger.exception("Spectral AI recommendation failed (non-fatal, using fallback)")
+        spectral_result["recommendations"] = {
+            "irrigation_advice": "Unavailable — recommendation service failed.",
+            "fertilization_advice": "Unavailable — recommendation service failed.",
+            "crop_management_advice": "Unavailable — recommendation service failed.",
+        }
+
+    spectral_result["elapsed_seconds"] = round(time.time() - t0, 2)
+    return jsonify(spectral_result), 200
+
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    """Chatbot endpoint — answers general agriculture questions and
+    questions about the currently-calculated farm. Grounded strictly in
+    the farm_context the frontend sends (the last /calculate response);
+    never invents farm-specific numbers not present in that context.
+
+    Request body:
+        {"message": str, "history": [{"role": "user"|"assistant", "text": str}], "farm_context": {...} | null}
+    """
+    body = request.get_json(silent=True)
+    if not body or not body.get("message"):
+        return jsonify({"error": "'message' is required"}), 400
+
+    message = str(body["message"]).strip()
+    if not message:
+        return jsonify({"error": "'message' cannot be empty"}), 400
+    if len(message) > 1000:
+        return jsonify({"error": "Message too long (max 1000 characters)"}), 400
+
+    history = body.get("history") or []
+    farm_context = body.get("farm_context")
+
+    try:
+        reply = generate_chat_reply(message, history=history, farm_context=farm_context)
+    except Exception:
+        logger.exception("Chat reply generation failed")
+        reply = None
+
+    if reply is None:
+        return jsonify({
+            "error": "AI assistant is currently unavailable. Check that GEMINI_API_KEY is configured."
+        }), 503
+
+    return jsonify({"reply": reply}), 200
+
+
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+MAX_IMAGE_BYTES = 6 * 1024 * 1024  # 6 MB
+
+
+@app.route("/diagnose", methods=["POST"])
+def diagnose():
+    """Crop disease diagnosis from an uploaded photo (multipart/form-data,
+    field name 'image'). Uses Gemini's real vision capability — not a
+    fabricated model. Always includes an explicit confidence level and a
+    caveat that this isn't a substitute for expert advice.
+    """
+    if "image" not in request.files:
+        return jsonify({"error": "No 'image' file in request"}), 400
+
+    file = request.files["image"]
+    if not file or file.filename == "":
+        return jsonify({"error": "Empty file"}), 400
+
+    mime_type = file.mimetype
+    if mime_type not in ALLOWED_IMAGE_TYPES:
+        return jsonify({
+            "error": f"Unsupported image type '{mime_type}'. Use JPEG, PNG, or WEBP."
+        }), 400
+
+    image_bytes = file.read()
+    if len(image_bytes) > MAX_IMAGE_BYTES:
+        return jsonify({"error": "Image too large (max 6 MB)"}), 400
+    if len(image_bytes) == 0:
+        return jsonify({"error": "Empty file"}), 400
+
+    try:
+        result = diagnose_crop_image(image_bytes, mime_type)
+    except Exception:
+        logger.exception("Crop diagnosis failed")
+        result = None
+
+    if result is None:
+        return jsonify({
+            "error": "AI diagnosis is currently unavailable. Check that GEMINI_API_KEY is configured."
+        }), 503
+
+    return jsonify(result), 200
+
+
+@app.route("/report/pdf", methods=["POST"])
+def report_pdf():
+    """Generates the SatSource-style PDF report from a /calculate response.
+    Frontend sends the exact result object it already has (score, components,
+    enrichment, trends, etc.) — this endpoint never recomputes or invents
+    anything, it only lays out what was already calculated.
+    """
+    body = request.get_json(silent=True)
+    if not body or "score" not in body:
+        return jsonify({"error": "Request body must be a /calculate response (must include 'score')"}), 400
+
+    try:
+        pdf_bytes = generate_pdf_report(body)
+    except Exception as exc:
+        logger.exception("PDF report generation failed")
+        return jsonify({"error": "Failed to generate PDF report", "detail": str(exc)}), 500
+
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=FarmScore_Report.pdf"},
+    )
+
+
+@app.route("/webhook/whatsapp", methods=["GET"])
+def whatsapp_verify():
+    """Meta calls this once, when you click 'Verify and Save' on the
+    WhatsApp webhook config page — confirms you control this URL.
+    """
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+
+    result = whatsapp_service.verify_webhook(mode, token, challenge)
+    if result is not None:
+        return result, 200
+    return "Verification failed", 403
+
+
+@app.route("/webhook/whatsapp", methods=["POST"])
+def whatsapp_incoming():
+    """Meta calls this for every incoming message/status update. Always
+    return 200 quickly — Meta retries aggressively on non-200 responses.
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        whatsapp_service.handle_incoming_message(payload, compute_farmscore, generate_chat_reply)
+    except Exception:
+        logger.exception("WhatsApp webhook processing failed")
+    return jsonify({"status": "ok"}), 200
+
+
+@app.route("/ndvi-heatmap", methods=["POST"])
+def ndvi_heatmap():
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "Request body must be valid JSON"}), 400
+
+    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
+    if lat is None or lng is None:
+        return jsonify({"error": "Both 'lat' and 'lng' are required"}), 400
+
+    try:
+        lat, lng = float(lat), float(lng)
+    except (TypeError, ValueError):
+        return jsonify({"error": "'lat' and 'lng' must be numbers"}), 400
+
+    result = fetch_ndvi_heatmap(lat, lng, polygon)
+    if result is None:
+        return jsonify({"error": "Heatmap generation failed"}), 502
+    return jsonify(result), 200
+
+
+def _db_unavailable_response():
+    return jsonify({"error": "Database not configured. Set DATABASE_URL (Neon Postgres) on the server to enable Farm Management."}), 503
+
+
+@app.route("/farmers", methods=["POST"])
+def create_farmer_route():
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    body = request.get_json(silent=True) or {}
+    if not body.get("name"):
+        return jsonify({"error": "'name' is required"}), 400
+
+    session = db_module.get_session()
+    try:
+        farmer = fms.create_farmer(
+            session, name=body["name"], phone=body.get("phone"),
+            village=body.get("village"), district=body.get("district"), state=body.get("state"),
+        )
+        return jsonify(farmer.to_dict()), 201
+    finally:
+        session.close()
+
+
+@app.route("/farmers", methods=["GET"])
+def list_farmers_route():
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    session = db_module.get_session()
+    try:
+        farmers = fms.list_farmers(session, search=request.args.get("search"))
+        return jsonify({"farmers": [f.to_dict() for f in farmers]}), 200
+    finally:
+        session.close()
+
+
+@app.route("/farmers/<farmer_id>", methods=["GET"])
+def get_farmer_route(farmer_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    session = db_module.get_session()
+    try:
+        farmer = fms.get_farmer(session, farmer_id)
+        if not farmer:
+            return jsonify({"error": "Farmer not found"}), 404
+        return jsonify(farmer.to_dict(include_farms=True)), 200
+    finally:
+        session.close()
+
+
+@app.route("/farmers/<farmer_id>", methods=["PUT"])
+def update_farmer_route(farmer_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    body = request.get_json(silent=True) or {}
+    session = db_module.get_session()
+    try:
+        farmer = fms.update_farmer(session, farmer_id, **body)
+        if not farmer:
+            return jsonify({"error": "Farmer not found"}), 404
+        return jsonify(farmer.to_dict()), 200
+    finally:
+        session.close()
+
+
+@app.route("/farmers/<farmer_id>", methods=["DELETE"])
+def delete_farmer_route(farmer_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    session = db_module.get_session()
+    try:
+        ok = fms.delete_farmer(session, farmer_id)
+        if not ok:
+            return jsonify({"error": "Farmer not found"}), 404
+        return jsonify({"status": "deleted"}), 200
+    finally:
+        session.close()
+
+
+@app.route("/farmers/<farmer_id>/farms", methods=["POST"])
+def create_farm_route(farmer_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    body = request.get_json(silent=True) or {}
+    lat, lng = body.get("lat"), body.get("lng")
+    if lat is None or lng is None:
+        return jsonify({"error": "'lat' and 'lng' are required"}), 400
+
+    session = db_module.get_session()
+    try:
+        farm = fms.create_farm(
+            session, farmer_id=farmer_id, lat=float(lat), lng=float(lng),
+            label=body.get("label"), polygon=body.get("polygon"),
+            survey_method=body.get("survey_method", "point_only"),
+            land_use_type=body.get("land_use_type"), survey_number=body.get("survey_number"),
+        )
+        if not farm:
+            return jsonify({"error": "Farmer not found"}), 404
+        return jsonify(farm.to_dict()), 201
+    finally:
+        session.close()
+
+
+@app.route("/farmers/<farmer_id>/farms", methods=["GET"])
+def list_farms_route(farmer_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    session = db_module.get_session()
+    try:
+        farms = fms.list_farms_for_farmer(session, farmer_id)
+        return jsonify({"farms": [f.to_dict() for f in farms]}), 200
+    finally:
+        session.close()
+
+
+@app.route("/farms/<farm_id>", methods=["GET"])
+def get_farm_route(farm_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    session = db_module.get_session()
+    try:
+        farm = fms.get_farm(session, farm_id)
+        if not farm:
+            return jsonify({"error": "Farm not found"}), 404
+        return jsonify(farm.to_dict()), 200
+    finally:
+        session.close()
+
+
+@app.route("/farms/<farm_id>", methods=["PUT"])
+def update_farm_route(farm_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    body = request.get_json(silent=True) or {}
+    session = db_module.get_session()
+    try:
+        farm = fms.update_farm(session, farm_id, **body)
+        if not farm:
+            return jsonify({"error": "Farm not found"}), 404
+        return jsonify(farm.to_dict()), 200
+    finally:
+        session.close()
+
+
+@app.route("/farms/<farm_id>", methods=["DELETE"])
+def delete_farm_route(farm_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    session = db_module.get_session()
+    try:
+        ok = fms.delete_farm(session, farm_id)
+        if not ok:
+            return jsonify({"error": "Farm not found"}), 404
+        return jsonify({"status": "deleted"}), 200
+    finally:
+        session.close()
+
+
+@app.route("/farms/import", methods=["POST"])
+def import_farm_boundary_route():
+    """Accepts a multipart file upload (.kml or .geojson/.json) and
+    returns the extracted polygon — does NOT save a farm; the frontend
+    takes this polygon and either shows it for confirmation or calls
+    /farmers/<id>/farms with it.
+    """
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded (field name must be 'file')"}), 400
+
+    f = request.files["file"]
+    filename = (f.filename or "").lower()
+    file_bytes = f.read()
+
+    if filename.endswith(".kml"):
+        polygon = fms.parse_kml_polygon(file_bytes)
+    elif filename.endswith(".geojson") or filename.endswith(".json"):
+        polygon = fms.parse_geojson_polygon(file_bytes)
+    else:
+        return jsonify({"error": "Unsupported file type — use .kml, .geojson, or .json"}), 400
+
+    if not polygon:
+        return jsonify({"error": "Could not extract a polygon from this file"}), 422
+
+    return jsonify({"polygon": polygon}), 200
+
+
+@app.route("/farms/auto-detect-boundary", methods=["POST"])
+def auto_detect_boundary_route():
+    body = request.get_json(silent=True) or {}
+    lat, lng = body.get("lat"), body.get("lng")
+    if lat is None or lng is None:
+        return jsonify({"error": "'lat' and 'lng' are required"}), 400
+    return jsonify(fms.auto_detect_boundary(float(lat), float(lng))), 200
+
+
+@app.route("/spectral-indices", methods=["POST"])
+def spectral_indices_route():
+    body = request.get_json(silent=True) or {}
+    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
+    if lat is None or lng is None:
+        return jsonify({"error": "'lat' and 'lng' are required"}), 400
+    try:
+        result = fetch_extended_indices(float(lat), float(lng), polygon)
+        return jsonify(result), 200
+    except Exception as exc:
+        logger.exception("spectral-indices failed")
+        return jsonify({"error": "Failed to compute indices", "detail": str(exc)}), 502
+
+
+@app.route("/sar-moisture", methods=["POST"])
+def sar_moisture_route():
+    body = request.get_json(silent=True) or {}
+    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
+    if lat is None or lng is None:
+        return jsonify({"error": "'lat' and 'lng' are required"}), 400
+    try:
+        result = fetch_sar_moisture(float(lat), float(lng), polygon)
+        return jsonify(result), 200
+    except Exception as exc:
+        logger.exception("sar-moisture failed")
+        return jsonify({"error": "Failed to fetch SAR data", "detail": str(exc)}), 502
+
+
+@app.route("/historical-timeline", methods=["POST"])
+def historical_timeline_route():
+    body = request.get_json(silent=True) or {}
+    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
+    if lat is None or lng is None:
+        return jsonify({"error": "'lat' and 'lng' are required"}), 400
+    try:
+        result = fetch_ndvi_historical_timeline(
+            float(lat), float(lng), polygon,
+            start_year=int(body.get("start_year", 2018)),
+            end_year=body.get("end_year"),
+        )
+        return jsonify(result), 200
+    except Exception as exc:
+        logger.exception("historical-timeline failed")
+        return jsonify({"error": "Failed to fetch timeline", "detail": str(exc)}), 502
+
+
+@app.route("/before-after", methods=["POST"])
+def before_after_route():
+    body = request.get_json(silent=True) or {}
+    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
+    date1, date2 = body.get("date1"), body.get("date2")
+    if lat is None or lng is None or not date1 or not date2:
+        return jsonify({"error": "'lat', 'lng', 'date1', and 'date2' are required"}), 400
+    try:
+        result = fetch_before_after_comparison(float(lat), float(lng), date1, date2, polygon)
+        return jsonify(result), 200
+    except Exception as exc:
+        logger.exception("before-after failed")
+        return jsonify({"error": "Failed to fetch comparison", "detail": str(exc)}), 502
+
+
+@app.route("/vegetation-heatmap", methods=["POST"])
+def vegetation_heatmap_route():
+    body = request.get_json(silent=True) or {}
+    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
+    index = body.get("index", "ndvi")
+    if lat is None or lng is None:
+        return jsonify({"error": "'lat' and 'lng' are required"}), 400
+    result = fetch_vegetation_heatmap(float(lat), float(lng), polygon, index=index)
+    if result is None:
+        return jsonify({"error": "Heatmap generation failed"}), 502
+    return jsonify(result), 200
+
+
+@app.route("/crop-intelligence", methods=["POST"])
+def crop_intelligence_route():
+    body = request.get_json(silent=True) or {}
+    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
+    if lat is None or lng is None:
+        return jsonify({"error": "'lat' and 'lng' are required"}), 400
+
+    try:
+        lat, lng = float(lat), float(lng)
+        import datetime
+        current_month = datetime.datetime.utcnow().month
+
+        # Reuse the same 12-month NDVI curve cropping_intensity already computes
+        intensity = _fetch_cropping_intensity_for_ci(lat, lng, polygon)
+        monthly_ndvi = intensity.get("monthly_ndvi", [])
+
+        identification = identify_crop_heuristic(lat, lng, polygon, monthly_ndvi=monthly_ndvi)
+        growth_stage = detect_growth_stage(monthly_ndvi, current_month)
+
+        season = "kharif" if 6 <= current_month <= 11 else "rabi"
+        sowing_harvest = estimate_sowing_harvest(monthly_ndvi, identification.get("identified_crop"), season)
+
+        history = _fetch_cropping_history_for_ci(lat, lng, polygon)
+        rotation = detect_crop_rotation(history)
+
+        calendar_ref = CROP_CALENDAR.get(identification.get("identified_crop"), {})
+
+        return jsonify({
+            "identification": identification,
+            "growth_stage": growth_stage,
+            "sowing_harvest_prediction": sowing_harvest,
+            "crop_rotation": rotation,
+            "crop_calendar": calendar_ref,
+            "cropping_intensity": {"label": intensity.get("label"), "estimated_cycles": intensity.get("estimated_cycles")},
+        }), 200
+    except Exception as exc:
+        logger.exception("crop-intelligence failed")
+        return jsonify({"error": "Failed to compute crop intelligence", "detail": str(exc)}), 502
+
+
+@app.route("/historical-weather", methods=["POST"])
+def historical_weather_route():
+    body = request.get_json(silent=True) or {}
+    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
+    if lat is None or lng is None:
+        return jsonify({"error": "'lat' and 'lng' are required"}), 400
+    try:
+        result = fetch_historical_weather(
+            float(lat), float(lng), polygon,
+            start_year=int(body.get("start_year", 2015)),
+            end_year=body.get("end_year"),
+        )
+        return jsonify(result), 200
+    except Exception as exc:
+        logger.exception("historical-weather failed")
+        return jsonify({"error": "Failed to fetch historical weather", "detail": str(exc)}), 502
+
+
+@app.route("/soil-health", methods=["POST"])
+def soil_health_route():
+    body = request.get_json(silent=True) or {}
+    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
+    if lat is None or lng is None:
+        return jsonify({"error": "'lat' and 'lng' are required"}), 400
+    try:
+        result = fetch_soil_health(float(lat), float(lng), polygon)
+        return jsonify(result), 200
+    except Exception as exc:
+        logger.exception("soil-health failed")
+        return jsonify({"error": "Failed to fetch soil health", "detail": str(exc)}), 502
+
+
+@app.route("/soil-moisture", methods=["POST"])
+def soil_moisture_route():
+    body = request.get_json(silent=True) or {}
+    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
+    if lat is None or lng is None:
+        return jsonify({"error": "'lat' and 'lng' are required"}), 400
+    try:
+        result = fetch_soil_moisture(float(lat), float(lng), polygon)
+        return jsonify(result), 200
+    except Exception as exc:
+        logger.exception("soil-moisture failed")
+        return jsonify({"error": "Failed to fetch soil moisture", "detail": str(exc)}), 502
+
+
+@app.route("/flood-risk", methods=["POST"])
+def flood_risk_route():
+    body = request.get_json(silent=True) or {}
+    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
+    if lat is None or lng is None:
+        return jsonify({"error": "'lat' and 'lng' are required"}), 400
+    try:
+        lat, lng = float(lat), float(lng)
+        # Reuse topography (slope) and SAR flood signal already built in
+        # earlier phases instead of recomputing them.
+        topo = _fetch_topography_for_flood(lat, lng, polygon)
+        sar = _fetch_sar_for_flood(lat, lng, polygon)
+        result = fetch_flood_risk(
+            lat, lng, polygon,
+            slope_degrees=topo.get("slope_degrees"),
+            sar_flood_signal=sar.get("flood_signal") if sar.get("available") else None,
+        )
+        return jsonify(result), 200
+    except Exception as exc:
+        logger.exception("flood-risk failed")
+        return jsonify({"error": "Failed to compute flood risk", "detail": str(exc)}), 502
+
+
+@app.route("/farm-advisor", methods=["POST"])
+def farm_advisor_route():
+    """Accepts whatever farm data the frontend already has (score,
+    enrichment, crop intelligence, weather/soil, etc.) and returns a
+    synthesized, prioritized advisory. Never recomputes anything —
+    grounded only in what's passed in.
+    """
+    body = request.get_json(silent=True) or {}
+    if not body:
+        return jsonify({"error": "Request body must include farm data"}), 400
+
+    advisory = generate_farm_advisor(body)
+    if advisory is None:
+        return jsonify({
+            "advisory": None,
+            "reason": "AI advisor unavailable (GEMINI_API_KEY not set or request failed). Review the individual data sections directly.",
+        }), 200
+    return jsonify({"advisory": advisory}), 200
+
+
+@app.route("/risk-analysis", methods=["POST"])
+def risk_analysis_route():
+    """Same pattern as /farm-advisor — accepts already-computed risk
+    signals (climate_risk, flood_risk, drought_instances, growth_stage,
+    etc.) and returns one synthesized narrative.
+    """
+    body = request.get_json(silent=True) or {}
+    if not body:
+        return jsonify({"error": "Request body must include risk data"}), 400
+
+    analysis = generate_risk_analysis(body)
+    if analysis is None:
+        return jsonify({
+            "analysis": None,
+            "reason": "AI risk analysis unavailable (GEMINI_API_KEY not set or request failed). Review the individual risk_level fields directly.",
+        }), 200
+    return jsonify({"analysis": analysis}), 200
+
+
+@app.route("/credit-intelligence", methods=["POST"])
+def credit_intelligence_route():
+    """Accepts the farm's already-computed result (score, yield_prediction,
+    climate_risk, enrichment.drought_instances, coordinates) — the exact
+    same object cached from /calculate — plus an optional pre-fetched
+    flood_risk. Computes it fresh from coordinates if not supplied.
+    Never recomputes score/yield/climate_risk — only combines what's
+    already there.
+    """
+    body = request.get_json(silent=True) or {}
+    if not body or "score" not in body:
+        return jsonify({"error": "Request body must be a /calculate response (must include 'score')"}), 400
+
+    try:
+        coords = body.get("coordinates", {})
+        lat, lng, polygon = coords.get("lat"), coords.get("lng"), body.get("polygon")
+
+        flood_risk = body.get("flood_risk")
+        if flood_risk is None and lat is not None and lng is not None:
+            try:
+                topo = _fetch_topography_for_flood(lat, lng, polygon)
+                sar = _fetch_sar_for_flood(lat, lng, polygon)
+                flood_risk = fetch_flood_risk(
+                    lat, lng, polygon,
+                    slope_degrees=topo.get("slope_degrees"),
+                    sar_flood_signal=sar.get("flood_signal") if sar.get("available") else None,
+                )
+            except Exception:
+                logger.exception("Flood risk fetch failed inside credit-intelligence (non-fatal)")
+                flood_risk = None
+
+        climate_risk = body.get("climate_risk", {})
+        drought = (body.get("enrichment") or {}).get("drought_instances") or {}
+
+        income = estimate_income(body.get("yield_prediction"), live_price=body.get("live_price"))
+        bcis = compute_bcis_score(
+            farmscore=body.get("score"),
+            climate_risk_level=climate_risk.get("level"),
+            flood_risk_level=flood_risk.get("risk_level") if flood_risk else None,
+            drought_years=drought.get("drought_years"),
+        )
+        loan_ceiling = recommend_loan_ceiling(income, bcis, policy_max_rs=body.get("policy_max_rs"))
+        freeze = auto_freeze_check(bcis)
+
+        return jsonify({
+            "income_estimate": income,
+            "bcis": bcis,
+            "loan_ceiling": loan_ceiling,
+            "auto_freeze": freeze,
+            "flood_risk_used": flood_risk,
+        }), 200
+    except Exception as exc:
+        logger.exception("credit-intelligence failed")
+        return jsonify({"error": "Failed to compute credit intelligence", "detail": str(exc)}), 502
+
+
+@app.route("/glossary", methods=["GET"])
+def glossary():
+    return jsonify({"terms": GLOSSARY_TERMS}), 200
+
+
+@app.route("/mandi-price", methods=["GET"])
+def mandi_price():
+    """Query params: commodity, state, district (optional).
+    Requires DATA_GOV_IN_KEY to be configured — see govt_data_service.py.
+    """
+    commodity = request.args.get("commodity")
+    state = request.args.get("state")
+    district = request.args.get("district")
+
+    if not commodity or not state:
+        return jsonify({"error": "'commodity' and 'state' query params are required"}), 400
+
+    result = fetch_mandi_price(commodity, state, district)
+    return jsonify(result), 200
+
+
+@app.route("/major-crops", methods=["GET"])
+def major_crops():
+    """Query params: district, state.
+    Requires DATA_GOV_IN_KEY to be configured — see govt_data_service.py.
+    """
+    district = request.args.get("district")
+    state = request.args.get("state")
+
+    if not district or not state:
+        return jsonify({"error": "'district' and 'state' query params are required"}), 400
+
+    result = fetch_major_crops_in_region(district, state)
+    return jsonify(result), 200
+
+
+@app.errorhandler(404)
+def not_found(_):
+    return jsonify({"error": "Endpoint not found"}), 404
+
+
+@app.errorhandler(405)
+def method_not_allowed(_):
+    return jsonify({"error": "Method not allowed"}), 405
+
+
+@app.errorhandler(500)
+def internal_error(_):
+    return jsonify({"error": "Internal server error"}), 500
+
+
+if __name__ == "__main__":
+    logger.info("Starting FarmScore API on %s:%d", HOST, PORT)
+    app.run(host=HOST, port=PORT, debug=DEBUG)

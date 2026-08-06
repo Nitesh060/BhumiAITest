@@ -6,7 +6,7 @@
 
 const API_BASE_URL =
     window.FARMSCORE_API_URL ||
-    "https://farmprototype.onrender.com";
+    "https://bhumiaitest.onrender.com";
 
 let selectedFarmerId = null;
 let pendingPolygon = null;   // GeoJSON Feature, set by draw/gps/import before saving

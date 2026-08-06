@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bhumi AI — Extended Report</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+
+<div class="app-shell">
+
+    <!-- =============================== Sidebar =============================== -->
+    <aside class="side-nav">
+
+        <div class="nav-logo">
+            <div class="logo-mark">🌱</div>
+            <div>
+                <h1>Bhumi AI</h1>
+                <p>Smart Land. Strong Future.</p>
+            </div>
+        </div>
+
+        <nav class="nav-links">
+            <a class="nav-link" href="index.html"><span>🏠</span> Dashboard</a>
+            <a class="nav-link active" href="report.html"><span>📄</span> Extended Report</a>
+            <a class="nav-link" href="glossary.html"><span>📚</span> Glossary</a>
+            <a class="nav-link" href="farm-management.html"><span>🧑‍🌾</span> Farm Management</a>
+            <a class="nav-link" href="satellite-intelligence.html"><span>🛰️</span> Satellite Intelligence</a>
+            <a class="nav-link" href="crop-intelligence.html"><span>🌾</span> Crop Intelligence</a>
+            <a class="nav-link" href="insurance-claim.html"><span>🛡️</span> Insurance Claims</a>
+        </nav>
+
+        <div class="nav-footer-card">
+            <div class="nfc-title">Satellite-Powered Land Intelligence</div>
+            <p>Real Earth observation data for better farming and financing decisions.</p>
+        </div>
+
+    </aside>
+
+    <!-- =============================== Main =============================== -->
+    <div class="main-col">
+
+        <header class="top-bar">
+            <div>
+                <h2 style="margin:0;font-size:1rem;">📄 Extended Farm Intelligence Report</h2>
+                <p class="panel-subtitle" id="report-subtitle" style="margin:2px 0 0;">No farm calculated yet</p>
+            </div>
+            <span class="topbar-spacer"></span>
+            <button id="download-pdf-btn-report" class="btn-detect" disabled>⬇️ Download PDF</button>
+        </header>
+
+        <div class="error-box" id="error-box"></div>
+
+        <div id="report-empty-state" class="panel-card" style="margin:14px 0;">
+            <p class="empty-hint">
+                No farm data found. Go to <a href="index.html" style="color:var(--accent,#2f9e63);">Dashboard</a>,
+                pick a location and calculate a Bhumi AI Score first — this page reads that result.
+            </p>
+        </div>
+
+        <div id="report-content" style="display:none;">
+
+            <div class="panel-card" style="margin-bottom:14px;">
+                <div class="panel-title">🧾 Farm Details</div>
+                <div id="farm-details-list" class="enrichment-list"></div>
+            </div>
+
+            <div class="panel-card" style="margin-bottom:14px;">
+                <div class="panel-title">🧭 Soil, Land &amp; Cropping Intelligence</div>
+                <div id="enrichment-list" class="enrichment-list"></div>
+            </div>
+
+            <div class="panel-card" style="margin-bottom:14px;">
+                <div class="panel-title">🌾 Cropping History (Satellite-derived, 3-year)</div>
+                <div id="cropping-history-table"></div>
+            </div>
+
+            <div class="panel-card" style="margin-bottom:14px;">
+                <div class="panel-title">💧 Water Conditions</div>
+                <div id="rainfall-chart" class="simple-bar-chart"></div>
+                <div id="groundwater-chart" class="simple-bar-chart" style="margin-top:14px;"></div>
+            </div>
+
+            <div class="panel-card" style="margin-bottom:14px;">
+                <div class="panel-title">🌍 Regional Parameters</div>
+                <div id="regional-list" class="enrichment-list"></div>
+            </div>
+
+        </div>
+
+        <footer class="app-footer">
+            <span>🛰️ Sentinel-2 · ESA WorldCover · OpenLandMap · JRC · VIIRS</span>
+            <span>Real satellite data — not AI-generated.</span>
+        </footer>
+
+    </div>
+</div>
+
+<script src="shell.js"></script>
+<script src="report.js"></script>
+</body>
+</html>

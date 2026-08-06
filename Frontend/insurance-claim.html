@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bhumi AI — Insurance Claims</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+
+<div class="app-shell">
+
+    <aside class="side-nav">
+        <div class="nav-logo">
+            <div class="logo-mark">🌱</div>
+            <div>
+                <h1>Bhumi AI</h1>
+                <p>Smart Land. Strong Future.</p>
+            </div>
+        </div>
+
+        <nav class="nav-links">
+            <a class="nav-link" href="index.html"><span>🏠</span> Dashboard</a>
+            <a class="nav-link" id="nav-diagnose-btn"><span>📋</span> Farm Evaluation</a>
+            <a class="nav-link" href="report.html"><span>📄</span> Extended Report</a>
+            <a class="nav-link" href="glossary.html"><span>📚</span> Glossary</a>
+            <a class="nav-link" href="farm-management.html"><span>🧑‍🌾</span> Farm Management</a>
+            <a class="nav-link" href="satellite-intelligence.html"><span>🛰️</span> Satellite Intelligence</a>
+            <a class="nav-link" href="crop-intelligence.html"><span>🌾</span> Crop Intelligence</a>
+            <a class="nav-link active" href="insurance-claim.html"><span>🛡️</span> Insurance Claims</a>
+        </nav>
+
+        <div class="nav-footer-card">
+            <div class="nfc-title">Insurance Claim Triage</div>
+            <p>Verify declared acreage/crop against satellite, estimate loss, flag discrepancies for review.</p>
+        </div>
+    </aside>
+
+    <div class="main-col">
+
+        <header class="top-bar">
+            <div>
+                <h2 style="margin:0;font-size:1rem;">🛡️ Insurance Claim Assessment</h2>
+                <p class="panel-subtitle" style="margin:2px 0 0;">Satellite-evidence triage — not an automatic decision</p>
+            </div>
+        </header>
+
+        <div class="error-box" id="error-box"></div>
+
+        <div class="panel-card" style="margin:14px 0;">
+            <div class="panel-title">📝 Claim Details</div>
+            <div class="fm-form">
+                <input type="text" id="lat-input" placeholder="Latitude" />
+                <input type="text" id="lng-input" placeholder="Longitude" />
+                <input type="number" id="declared-area-input" placeholder="Declared area (hectares)" step="0.01" />
+                <input type="text" id="declared-crop-input" placeholder="Declared crop (e.g. Rice)" />
+                <label class="empty-hint">Pre-event date (before the loss)</label>
+                <input type="date" id="date1-input" />
+                <label class="empty-hint">Post-event date (after the loss)</label>
+                <input type="date" id="date2-input" />
+                <button type="button" id="use-last-farm-btn" class="btn-detect">Use Last Calculated Farm's Location</button>
+                <button type="button" id="assess-claim-btn" class="btn-detect">Assess Claim</button>
+            </div>
+        </div>
+
+        <div id="claim-loading" class="panel-card" style="display:none;margin:14px 0;">
+            <p class="empty-hint">Analyzing satellite evidence… this can take 20-30 seconds.</p>
+        </div>
+
+        <div id="claim-result" style="display:none;">
+
+            <div class="panel-card" style="margin-bottom:14px;" id="recommendation-card">
+                <div class="panel-title">📋 Recommendation</div>
+                <div id="recommendation-text" style="font-size:0.9rem;font-weight:700;"></div>
+                <p class="empty-hint" id="recommendation-reason"></p>
+            </div>
+
+            <div class="panel-card" style="margin-bottom:14px;">
+                <div class="panel-title">📐 Acreage Verification</div>
+                <div id="acreage-list" class="enrichment-list"></div>
+            </div>
+
+            <div class="panel-card" style="margin-bottom:14px;">
+                <div class="panel-title">🌾 Crop Verification</div>
+                <div id="crop-list" class="enrichment-list"></div>
+            </div>
+
+            <div class="panel-card" style="margin-bottom:14px;">
+                <div class="panel-title">📉 Loss Estimation</div>
+                <div id="loss-list" class="enrichment-list"></div>
+            </div>
+
+            <div class="panel-card" style="margin-bottom:14px;">
+                <div class="panel-title">🚩 Fraud Signals</div>
+                <div id="fraud-list" class="enrichment-list"></div>
+            </div>
+
+            <p class="empty-hint" id="disclaimer-text" style="margin-top:6px;"></p>
+
+        </div>
+
+        <footer class="app-footer">
+            <span>🛡️ Satellite-evidence triage tool</span>
+            <span>All recommendations require human review.</span>
+        </footer>
+
+    </div>
+</div>
+
+<script src="shell.js"></script>
+<script src="insurance-claim.js"></script>
+</body>
+</html>

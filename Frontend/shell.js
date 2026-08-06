@@ -13,7 +13,7 @@
 
 const BHUMI_API_BASE_URL =
     window.FARMSCORE_API_URL ||
-    "https://farmprototype.onrender.com";
+    "https://bhumiaitest.onrender.com";
 
 function bhumiGetToken() {
     return localStorage.getItem("bhumi_token");

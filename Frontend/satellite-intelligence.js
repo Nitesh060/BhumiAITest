@@ -1,6 +1,6 @@
 const API_BASE_URL =
     window.FARMSCORE_API_URL ||
-    "https://farmprototype.onrender.com";
+    "https://bhumiaitest.onrender.com";
 
 let farmData = null;
 

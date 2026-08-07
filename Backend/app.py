@@ -1087,6 +1087,100 @@ def auth_me_route():
     return jsonify({"user": request.user}), 200
 
 
+@app.route("/admin/users", methods=["GET"])
+@auth_service.require_auth(["admin"])
+def admin_list_users_route():
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    session = db_module.get_session()
+    try:
+        users = session.query(auth_service.User).order_by(auth_service.User.created_at.desc()).all()
+        return jsonify({"users": [u.to_dict() for u in users]}), 200
+    finally:
+        session.close()
+
+
+@app.route("/admin/users", methods=["POST"])
+@auth_service.require_auth(["admin"])
+def admin_create_user_route():
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    body = request.get_json(silent=True) or {}
+    username, password, name = body.get("username"), body.get("password"), body.get("name")
+    role = body.get("role", "field_officer")
+    if not username or not password or not name:
+        return jsonify({"error": "'username', 'password', and 'name' are required"}), 400
+    if role not in ("admin", "field_officer"):
+        return jsonify({"error": "'role' must be 'admin' or 'field_officer'"}), 400
+
+    session = db_module.get_session()
+    try:
+        existing = session.query(auth_service.User).filter(auth_service.User.username == username).first()
+        if existing:
+            return jsonify({"error": "Username already taken"}), 409
+        user = auth_service.register_user(session, username, password, name, role)
+        return jsonify({"user": user.to_dict()}), 201
+    finally:
+        session.close()
+
+
+@app.route("/admin/users/<user_id>", methods=["DELETE"])
+@auth_service.require_auth(["admin"])
+def admin_delete_user_route(user_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    if user_id == request.user.get("user_id"):
+        return jsonify({"error": "Cannot delete your own account while logged in as it"}), 400
+
+    session = db_module.get_session()
+    try:
+        user = session.query(auth_service.User).filter(auth_service.User.id == user_id).first()
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        session.delete(user)
+        session.commit()
+        return jsonify({"status": "deleted"}), 200
+    finally:
+        session.close()
+
+
+@app.route("/portfolio/summary", methods=["GET"])
+@auth_service.require_auth()
+def portfolio_summary_route():
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    session = db_module.get_session()
+    try:
+        farmers = fms.list_farmers(session)
+        all_farms = []
+        for f in farmers:
+            all_farms.extend(fms.list_farms_for_farmer(session, f.id))
+
+        total_area = sum(f.area_ha for f in all_farms if f.area_ha)
+        farms_with_area = sum(1 for f in all_farms if f.area_ha)
+
+        survey_method_counts: dict = {}
+        for f in all_farms:
+            key = f.survey_method or "unknown"
+            survey_method_counts[key] = survey_method_counts.get(key, 0) + 1
+
+        district_counts: dict = {}
+        for farmer in farmers:
+            key = farmer.district or "Unspecified"
+            district_counts[key] = district_counts.get(key, 0) + 1
+
+        return jsonify({
+            "total_farmers": len(farmers),
+            "total_farms": len(all_farms),
+            "total_area_ha": round(total_area, 2),
+            "farms_with_measured_area": farms_with_area,
+            "survey_method_breakdown": survey_method_counts,
+            "farmers_by_district": district_counts,
+        }), 200
+    finally:
+        session.close()
+
+
 @app.route("/glossary", methods=["GET"])
 def glossary():
     return jsonify({"terms": GLOSSARY_TERMS}), 200

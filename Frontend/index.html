@@ -1,402 +1,634 @@
 <!DOCTYPE html>
-<html lang="en">
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bhumi AI — Agricultural Suitability Dashboard</title>
-
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
-
-    <link rel="stylesheet" href="style.css" />
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Bhumi AI - Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&amp;family=Sora:wght@400;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "tertiary": "#fff2de",
+                        "on-primary-fixed-variant": "#005137",
+                        "on-tertiary-fixed-variant": "#5b4300",
+                        "surface-container": "#171f33",
+                        "on-secondary-container": "#eaf6ff",
+                        "inverse-on-surface": "#283044",
+                        "tertiary-fixed-dim": "#edc05e",
+                        "on-background": "#dbe2fd",
+                        "tertiary-fixed": "#ffdf9e",
+                        "secondary-container": "#0078a2",
+                        "on-surface-variant": "#bbcac0",
+                        "error-container": "#93000a",
+                        "surface-container-lowest": "#060d20",
+                        "surface-container-low": "#131b2e",
+                        "primary-container": "#5af0b3",
+                        "on-tertiary": "#402d00",
+                        "on-primary-fixed": "#002114",
+                        "deep-slate": "#1e293b",
+                        "error": "#ffb4ab",
+                        "cool-gray": "#94a3b8",
+                        "outline-variant": "#3c4a42",
+                        "primary-fixed": "#68fcbe",
+                        "surface-dim": "#0b1326",
+                        "primary-fixed-dim": "#45dfa3",
+                        "on-primary": "#003825",
+                        "growth-mint": "#a7f3d0",
+                        "on-primary-container": "#006b49",
+                        "on-error": "#690005",
+                        "on-tertiary-container": "#775800",
+                        "on-secondary": "#00344a",
+                        "on-tertiary-fixed": "#261a00",
+                        "on-secondary-fixed-variant": "#004c69",
+                        "secondary-fixed-dim": "#7cd0ff",
+                        "surface": "#0b1326",
+                        "surface-variant": "#2d3449",
+                        "inverse-surface": "#dbe2fd",
+                        "secondary-fixed": "#c4e7ff",
+                        "inverse-primary": "#006c4a",
+                        "surface-container-highest": "#2d3449",
+                        "on-error-container": "#ffdad6",
+                        "surface-tint": "#45dfa3",
+                        "primary": "#cbffe2",
+                        "surface-bright": "#31394e",
+                        "tertiary-container": "#ffd16d",
+                        "on-surface": "#dbe2fd",
+                        "surface-container-high": "#222a3d",
+                        "on-secondary-fixed": "#001e2c",
+                        "background": "#0b1326",
+                        "secondary": "#7cd0ff",
+                        "outline": "#85948b",
+                        "crimson": "#dc2626", // Added custom crimson for the theme
+                        "crimson-dark": "#991b1b"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "xl": "64px",
+                        "base": "4px",
+                        "gutter": "20px",
+                        "lg": "40px",
+                        "sm": "16px",
+                        "xs": "8px",
+                        "md": "24px",
+                        "margin-desktop": "32px"
+                    },
+                    "fontFamily": {
+                        "data-lg": ["JetBrains Mono"],
+                        "body-lg": ["Sora"],
+                        "data-md": ["JetBrains Mono"],
+                        "label-caps": ["JetBrains Mono"],
+                        "display-lg": ["Sora"],
+                        "headline-sm": ["Sora"],
+                        "headline-md": ["Sora"],
+                        "body-md": ["Sora"]
+                    },
+                    "fontSize": {
+                        "data-lg": ["18px", { "lineHeight": "1", "fontWeight": "600" }],
+                        "body-lg": ["16px", { "lineHeight": "1.5", "fontWeight": "400" }],
+                        "data-md": ["14px", { "lineHeight": "1", "fontWeight": "500" }],
+                        "label-caps": ["10px", { "letterSpacing": "0.1em", "fontWeight": "700" }],
+                        "display-lg": ["36px", { "lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "headline-sm": ["18px", { "lineHeight": "1.2", "fontWeight": "700" }],
+                        "headline-md": ["24px", { "lineHeight": "1.2", "fontWeight": "600" }],
+                        "body-md": ["14px", { "lineHeight": "1.4", "fontWeight": "400" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .material-symbols-outlined.fill {
+            font-variation-settings: 'FILL' 1;
+        }
+        
+        /* Thematic Custom CSS */
+        .crimson-glow {
+            box-shadow: 0 0 15px rgba(220, 38, 38, 0.4);
+        }
+        .crimson-border {
+            border-color: #991b1b;
+        }
+        .animate-pulse-crimson {
+            animation: pulse-crimson 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse-crimson {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7); }
+            50% { box-shadow: 0 0 0 10px rgba(220, 38, 38, 0); }
+        }
+        
+        .ember {
+            position: absolute;
+            background: #ff4500;
+            border-radius: 50%;
+            opacity: 0;
+            animation: float-up 3s ease-in infinite;
+        }
+        @keyframes float-up {
+            0% { transform: translateY(0) scale(1); opacity: 0.8; }
+            100% { transform: translateY(-100px) scale(0); opacity: 0; }
+        }
+    </style>
 </head>
+<body class="bg-background text-on-surface font-body-md min-h-screen overflow-x-hidden relative">
+<!-- Global Shader Background -->
+<!-- STITCH_SHADER_START:ANIMATION_9 class="fixed inset-0 w-full h-full z-[-2] pointer-events-none" -->
+<div class="fixed inset-0 w-full h-full z-[-2] pointer-events-none" style="display:block;">
+<canvas id="shader-canvas-ANIMATION_9" style="display:block;width:100%;height:100%"></canvas>
+<script>
+(function() {
+  const canvas = document.getElementById('shader-canvas-ANIMATION_9');
 
-<body>
+  // Sync the WebGL drawing-buffer size with the CSS-driven layout size.
+  // This fires on initial layout and whenever the element is resized.
+  function syncSize() {
+    const w = canvas.clientWidth  || 1280;
+    const h = canvas.clientHeight || 720;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width  = w;
+      canvas.height = h;
+    }
+  }
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(syncSize).observe(canvas);
+  }
+  syncSize();
 
-<div class="app-shell">
+  const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+  if (!gl) return;
+  const vs = `attribute vec2 a_position;
+varying vec2 v_texCoord;
+void main() {
+  v_texCoord = a_position * 0.5 + 0.5;
+  gl_Position = vec4(a_position, 0.0, 1.0);
+}`;
+  const fs = `precision highp float;
+uniform float u_time;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+varying vec2 v_texCoord;
 
-    <!-- =============================== Sidebar =============================== -->
-    <aside class="side-nav">
+// Simplex noise for organic blood-like flow
+vec3 permute(vec3 x) { return mod(((x*34.0)+1.0)*x, 289.0); }
+float snoise(vec2 v){
+  const vec4 C = vec4(0.211324865405187, 0.366025403784439,
+           -0.577350269189626, 0.024390243902439);
+  vec2 i  = floor(v + dot(v, C.yy) );
+  vec2 x0 = v -   i + dot(i, C.xx);
+  vec2 i1;
+  i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+  vec4 x12 = x0.xyxy + C.xxzz;
+  x12.xy -= i1;
+  i = mod(i, 289.0);
+  vec3 p = permute( permute( i.y + vec3(0.0, i1.y, 1.0 ))
+  + i.x + vec3(0.0, i1.x, 1.0 ));
+  vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy),
+    dot(x12.zw,x12.zw)), 0.0);
+  m = m*m ;
+  m = m*m ;
+  vec3 x = 2.0 * fract(p * C.www) - 1.0;
+  vec3 h = abs(x) - 0.5;
+  vec3 ox = floor(x + 0.5);
+  vec3 a0 = x - ox;
+  m *= 1.79284291400159 - 0.85373472095314 * ( a0*a0 + h*h );
+  vec3 g;
+  g.x  = a0.x  * x0.x  + h.x  * x0.y;
+  g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+  return 130.0 * dot(m, g);
+}
 
-        <div class="nav-logo">
-            <div class="logo-mark">🌱</div>
-            <div>
-                <h1>Bhumi AI</h1>
-                <p>Smart Land. Strong Future.</p>
-            </div>
-        </div>
+void main() {
+    vec2 uv = v_texCoord;
+    float t = u_time * 0.1;
+    
+    // Create multiple layers of "smoke" and "blood"
+    float n1 = snoise(uv * 2.0 + t);
+    float n2 = snoise(uv * 4.0 - t * 1.5 + n1);
+    float n3 = snoise(uv * 8.0 + t * 0.5 + n2);
+    
+    // Palette
+    vec3 black = vec3(0.04, 0.04, 0.04); // #0a0a0a
+    vec3 blood = vec3(0.5, 0.05, 0.05);  // #7f1d1d
+    vec3 crimson = vec3(0.6, 0.1, 0.1); // #991b1b
+    
+    vec3 color = mix(black, blood, n1 * 0.5 + 0.5);
+    color = mix(color, crimson, n2 * 0.3);
+    color += crimson * n3 * 0.1; // Subtle sparks/embers
+    
+    // Vignette
+    float dist = distance(uv, vec2(0.5));
+    color *= smoothstep(0.8, 0.2, dist);
+    
+    gl_FragColor = vec4(color, 1.0);
+}`;
+  function cs(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    return s;
+  }
+  const prog = gl.createProgram();
+  gl.attachShader(prog, cs(gl.VERTEX_SHADER, vs));
+  gl.attachShader(prog, cs(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(prog);
+  gl.useProgram(prog);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const pos = gl.getAttribLocation(prog, 'a_position');
+  gl.enableVertexAttribArray(pos);
+  gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
+  const uTime = gl.getUniformLocation(prog, 'u_time');
+  const uRes = gl.getUniformLocation(prog, 'u_resolution');
+  const uMouse = gl.getUniformLocation(prog, 'u_mouse');
 
-        <nav class="nav-links">
-            <a class="nav-link active" href="index.html"><span>🏠</span> Dashboard</a>
-            <a class="nav-link" id="nav-diagnose-btn"><span>📋</span> Farm Evaluation</a>
-            <a class="nav-link" href="report.html"><span>📄</span> Extended Report</a>
-            <a class="nav-link" href="glossary.html"><span>📚</span> Glossary</a>
-            <a class="nav-link" href="farm-management.html"><span>🧑‍🌾</span> Farm Management</a>
-            <a class="nav-link" href="satellite-intelligence.html"><span>🛰️</span> Satellite Intelligence</a>
-            <a class="nav-link" href="crop-intelligence.html"><span>🌾</span> Crop Intelligence</a>
-            <a class="nav-link" href="insurance-claim.html"><span>🛡️</span> Insurance Claims</a>
-        </nav>
+  // u_mouse is in pixel coordinates matching u_resolution (ShaderToy convention).
+  // Shaders that need normalized coords should use: u_mouse / u_resolution.
+  let mouse = { x: canvas.width / 2, y: canvas.height / 2 };
+  window.addEventListener('mousemove', (event) => {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width && rect.height) {
+      const nx = (event.clientX - rect.left) / rect.width;
+      const ny = 1.0 - (event.clientY - rect.top) / rect.height;
+      mouse.x = nx * canvas.width;
+      mouse.y = ny * canvas.height;
+    }
+  });
 
-        <div class="nav-footer-card">
-            <div class="nfc-title">Satellite-Powered Land Intelligence</div>
-            <p>Real Earth observation data for better farming and financing decisions.</p>
-        </div>
-
-    </aside>
-
-    <!-- =============================== Main =============================== -->
-    <div class="main-col">
-
-        <!-- Top bar -->
-        <header class="top-bar">
-
-            <div class="search-wrap">
-                <span class="search-icon">🔍</span>
-                <input type="text" id="location-search" placeholder="Search location, village or city…">
-                <button id="search-btn" class="icon-btn" title="Search">Go</button>
-            </div>
-
-            <button class="btn-detect" id="location-btn">
-                <span class="btn-icon">📍</span> Detect My Location
-            </button>
-
-            <span class="topbar-spacer"></span>
-
-            <span class="bell-icon" title="Notifications">🔔</span>
-
-        </header>
-
-        <div class="error-box" id="error-box"></div>
-
-        <!-- Info strip -->
-        <div class="info-strip">
-
-            <div class="info-card" id="sat-status-card">
-                <div class="info-card-title">🛰️ Satellite Status</div>
-                <div class="info-card-main">Sentinel-2</div>
-                <div class="info-card-line" id="sat-status-scenes">Select a location</div>
-                <div class="info-card-line" id="sat-status-cloud">—</div>
-                <div class="info-card-line muted" id="sat-status-freshness">—</div>
-            </div>
-
-            <div class="info-card score-info-card">
-                <div class="info-card-title">🌾 Farm Score</div>
-                <div class="mini-score-row">
-                    <div class="mini-score-ring">
-                        <svg viewBox="0 0 130 130">
-                            <circle cx="65" cy="65" r="54" fill="none" stroke="#22303c" stroke-width="14"/>
-                            <circle
-                                cx="65" cy="65" r="54" fill="none"
-                                stroke="#34d399" stroke-width="14"
-                                stroke-linecap="round"
-                                stroke-dasharray="339.3"
-                                stroke-dashoffset="339.3"
-                                id="ring-arc"
-                                transform="rotate(-90 65 65)"/>
-                        </svg>
-                        <div class="mini-score-center">
-                            <span id="final-score">—</span>
-                        </div>
-                    </div>
-                    <div>
-                        <div class="score-grade" id="score-grade">—</div>
-                        <div class="coord-display" id="coord-display">/900</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="info-card" id="selected-location-card">
-                <div class="info-card-title">📍 Location</div>
-                <div class="info-card-main" id="selected-location-coords">Not selected</div>
-                <div class="info-card-line" id="selected-location-place">Click the map or search above</div>
-            </div>
-
-            <div class="info-card weather-info-card" id="weather-card">
-                <div class="info-card-title">🌦 Weather Today</div>
-                <div class="weather-current">
-                    <div class="weather-icon" id="weather-icon">—</div>
-                    <div>
-                        <div class="weather-current-temp" id="weather-temp">—°C</div>
-                        <div class="weather-current-desc" id="weather-desc">—</div>
-                    </div>
-                    <div class="weather-wind" id="weather-wind"></div>
-                </div>
-            </div>
-
-        </div>
-
-        <!-- Main dashboard row: map+breakdown (left) / nearby+loan (right) -->
-        <div class="dashboard-grid">
-
-            <!-- Map column -->
-            <div class="map-column">
-
-                <div class="map-tabs">
-                    <button class="map-tab active" data-tab="view">Map View</button>
-                    <button class="map-tab" data-tab="ndvi">NDVI</button>
-                    <button class="map-tab" data-tab="ndmi">Soil Moisture</button>
-                    <button class="map-tab" data-tab="rainfall">Rainfall</button>
-                    <button class="map-tab" data-tab="groundwater">Groundwater</button>
-                    <button class="map-tab map-tab-spectral" data-tab="spectral" id="spectral-tab-btn">🔬 Spectral</button>
-                    <button class="map-tab" data-tab="layers">More Layers ▾</button>
-                </div>
-
-                <div class="map-panel">
-
-                    <div id="map"></div>
-
-                    <div class="ndvi-legend" id="ndvi-legend" style="display:none;">
-                        <span>NDVI Health</span>
-                        <div class="legend-gradient"></div>
-                        <span class="legend-labels"><span>Low</span><span>High</span></span>
-                    </div>
-
-                </div>
-
-                <div class="bottom-row">
-
-                    <div class="panel-card">
-                        <div class="panel-title">📊 Score Breakdown</div>
-                        <div id="params-grid" class="params-grid">
-                            <p class="empty-hint">Calculate a Bhumi AI Score to see the breakdown.</p>
-                        </div>
-                    </div>
-
-                    <div class="panel-card">
-                        <div class="panel-title">📈 NDVI Trend <span class="panel-subtitle">2020–2023</span></div>
-                        <div id="trend-chart-wrap" class="trend-chart-wrap">
-                            <p class="trend-empty">Calculate a Bhumi AI Score to see the trend.</p>
-                        </div>
-                    </div>
-
-                    <div class="panel-card">
-                        <div class="panel-title">📋 Land Summary</div>
-                        <div class="summary-row"><span>Farm Score</span><span id="ls-score">—</span></div>
-                        <div class="summary-row"><span>Risk Level</span><span id="ls-risk">—</span></div>
-                        <div class="summary-row"><span>Top Crop</span><span id="ls-crop">—</span></div>
-                        <div class="summary-row"><span>Climate Risk</span><span id="ls-climate">—</span></div>
-                        <div class="summary-row"><span>Surface Water (NDWI)</span><span id="ls-ndwi">—</span></div>
-                        <div class="summary-row"><span>Farm Area</span><span id="ls-area">—</span></div>
-                        <div class="summary-row"><span>Eval. Date</span><span id="ls-date">—</span></div>
-                    </div>
-
-                </div>
-
-            </div>
-
-            <!-- Right column -->
-            <div class="right-column">
-
-                <div class="panel-card nearby-card" id="nearby-resources-card">
-                    <div class="panel-title">
-                        📍 Nearby Resources
-                        <span class="accessibility-pill">Accessibility <b id="accessibility-value">—</b></span>
-                    </div>
-                    <div id="nearby-resources-list" class="nearby-list">
-                        <p class="empty-hint">Select a location to find nearby resources.</p>
-                    </div>
-                </div>
-
-                <div class="panel-card ai-card" id="ai-insight-card" style="display:none;">
-                    <div class="panel-title">✨ AI Insight <span class="panel-subtitle">Gemini · explains the numbers above</span></div>
-                    <p class="ai-insight-text" id="ai-insight-text"></p>
-                </div>
-
-                <div class="panel-card ai-card" id="ai-advisor-card" style="display:none;">
-                    <div class="panel-title">🧑‍🌾 AI Farm Advisor <span class="panel-subtitle">Prioritized actions</span></div>
-                    <p class="ai-insight-text" id="ai-advisor-text">Not generated yet.</p>
-                    <button type="button" id="get-advisor-btn" class="btn-detect">Get Advisory</button>
-                </div>
-
-                <div class="panel-card ai-card" id="ai-risk-card" style="display:none;">
-                    <div class="panel-title">⚠️ AI Risk Analysis <span class="panel-subtitle">Combines all risk signals</span></div>
-                    <p class="ai-insight-text" id="ai-risk-text">Not generated yet.</p>
-                    <button type="button" id="get-risk-btn" class="btn-detect">Get Risk Analysis</button>
-                </div>
-
-                <div class="panel-card loan-card">
-                    <div class="panel-title">🏦 Loan Eligibility Suggestion</div>
-                    <div class="loan-status" id="loan-status">—</div>
-                    <p class="loan-desc" id="loan-desc">Calculate a Bhumi AI Score to see a suggestion.</p>
-                </div>
-
-                <div class="panel-card" id="bcis-card" style="display:none;">
-                    <div class="panel-title">💳 BCIS Credit Intelligence <span class="panel-subtitle">Income · Risk Tier · Loan Ceiling</span></div>
-                    <div id="bcis-content">
-                        <p class="empty-hint">Not computed yet — needs a farm boundary (for total yield) for the loan ceiling.</p>
-                    </div>
-                    <button type="button" id="compute-bcis-btn" class="btn-detect" style="width:100%;margin-top:8px;">Compute BCIS &amp; Loan Ceiling</button>
-                </div>
-
-                <div class="panel-card">
-                    <div class="panel-title">📄 Full Report</div>
-                    <p class="loan-desc">Soil, cropping history, irrigation, water &amp; regional data live on the Extended Report page.</p>
-                    <a href="report.html" class="btn-detect" style="display:block;text-align:center;text-decoration:none;margin-top:6px;">View Extended Report →</a>
-                    <button id="download-pdf-btn" class="btn-detect" style="display:block;width:100%;margin-top:8px;" disabled>⬇️ Download PDF Report</button>
-                </div>
-
-            </div>
-
-        </div>
-
-        <footer class="app-footer">
-            <span>🛰️ Sentinel-2 · NASA GLDAS · CHIRPS · MODIS LST</span>
-            <span>Real satellite data — not AI-generated.</span>
-        </footer>
-
-        <!-- Hidden functional fields — kept in the DOM and driven by map click /
-             search / geolocation, not shown as raw inputs. -->
-        <div class="visually-hidden">
-            <input type="date" id="start-date" value="2020-08-01">
-            <input type="date" id="end-date" value="2023-10-31">
-            <input type="number" id="lat-input">
-            <input type="number" id="lng-input">
-            <input type="text" id="village-input">
-            <input type="text" id="district-input">
-            <input type="text" id="state-input">
-            <input type="text" id="pincode-input">
-            <input type="text" id="farm-area">
-            <div id="weather-forecast"></div>
-        </div>
-
-    </div>
-
+  function render(t) {
+    if (typeof ResizeObserver === 'undefined') syncSize();
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    if (uTime) gl.uniform1f(uTime, t * 0.001);
+    if (uRes) gl.uniform2f(uRes, canvas.width, canvas.height);
+    if (uMouse) gl.uniform2f(uMouse, mouse.x, mouse.y);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    requestAnimationFrame(render);
+  }
+  render(0);
+})();
+</script>
 </div>
-
-<!-- Floating action button — the real, single Calculate control -->
-<button class="fab-calculate" id="calc-btn">
-    <span class="fab-icon">📊</span>
-    <span id="btn-text">Calculate Bhumi AI Score</span>
+<!-- STITCH_SHADER_END:ANIMATION_9 -->
+<!-- Decorative Crow Silhouette -->
+<div class="fixed inset-0 w-full h-full z-[-1] pointer-events-none opacity-20 bg-cover bg-center" data-alt="A subtle, dark silhouette of a crow spreading its wings against a deep red, smoky background, evoking a mysterious and powerful anime-inspired atmosphere." style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuCiLof0W3KVJ8NSWnzxQ4_CrdbjYjQ6Hyo9QTtIpQ81XZL8Y-7vCkauO2ZFr-W0jvotaN9A1-Bkxpq_nsJatRlwWsXDITx1SYA6Hu14GUDnjIds02PS0oeQFDMtl30XDrrEBFuWiRQ5LUo0K9FlfI3AU0yUmqmdxYhSOxsXJlTeL58_NiYfsb4kI0dM-5YiV1vJij-dSG-UeaIIE2CRhz7xmtS_2HuJZV3OHgNLKZRPaZFU59JeX6vYug')"></div>
+<!-- SideNavBar (Drawer on Mobile, Fixed on Desktop) -->
+<aside class="hidden md:flex flex-col w-64 h-full fixed left-0 top-0 bg-surface-container dark:bg-surface-container border-r border-crimson-dark z-20 shadow-[4px_0_15px_rgba(153,27,27,0.2)]">
+<div class="flex flex-col h-full py-lg px-sm">
+<!-- Brand -->
+<div class="flex items-center gap-4 mb-xl px-2">
+<span class="material-symbols-outlined text-crimson text-3xl fill">visibility</span>
+<div>
+<h1 class="font-display-lg text-crimson leading-none">Bhumi AI</h1>
+<p class="font-body-md text-cool-gray">High-Tech Agronomist</p>
+</div>
+</div>
+<!-- Navigation Links -->
+<nav class="flex-1 flex flex-col gap-2">
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg text-crimson font-bold border-r-2 border-crimson bg-surface-container-high transition-colors hover:bg-surface-container-high hover:text-on-surface" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+<span class="font-body-md">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg text-cool-gray font-body-md transition-colors hover:bg-surface-container-high hover:text-on-surface" href="#">
+<span class="material-symbols-outlined">agriculture</span>
+<span class="font-body-md">Farm Evaluation</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg text-cool-gray font-body-md transition-colors hover:bg-surface-container-high hover:text-on-surface" href="#">
+<span class="material-symbols-outlined">satellite_alt</span>
+<span class="font-body-md">Satellite View</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg text-cool-gray font-body-md transition-colors hover:bg-surface-container-high hover:text-on-surface" href="#">
+<span class="material-symbols-outlined">science</span>
+<span class="font-body-md">Soil Analysis</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg text-cool-gray font-body-md transition-colors hover:bg-surface-container-high hover:text-on-surface" href="#">
+<span class="material-symbols-outlined">analytics</span>
+<span class="font-body-md">Spectral Health</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg text-cool-gray font-body-md transition-colors hover:bg-surface-container-high hover:text-on-surface" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-body-md">Settings</span>
+</a>
+</nav>
+<!-- CTA & Footer -->
+<div class="mt-auto flex flex-col gap-4">
+<button class="w-full py-3 px-4 bg-crimson text-white rounded-lg font-body-md font-bold hover:bg-crimson-dark transition-colors animate-pulse-crimson">
+                    Calculate Health
+                </button>
+<div class="pt-4 border-t border-outline-variant flex flex-col gap-2">
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg text-cool-gray font-body-md hover:bg-surface-container-high transition-colors" href="#">
+<span class="material-symbols-outlined">help</span>
+<span>Support</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 rounded-lg text-cool-gray font-body-md hover:bg-surface-container-high transition-colors" href="#">
+<span class="material-symbols-outlined">logout</span>
+<span>Logout</span>
+</a>
+</div>
+</div>
+</div>
+</aside>
+<!-- TopNavBar -->
+<header class="hidden md:flex justify-between items-center w-full px-margin-desktop py-xs ml-64 max-w-[calc(100%-256px)] bg-surface/80 dark:bg-surface/80 backdrop-blur-md sticky top-0 border-b border-crimson-dark z-10">
+<div class="flex items-center gap-6">
+<!-- Navigation Links -->
+<nav class="flex gap-4">
+<a class="font-body-md text-crimson border-b-2 border-crimson pb-1" href="#">Overview</a>
+<a class="font-body-md text-on-surface-variant hover:text-crimson transition-all" href="#">Reports</a>
+<a class="font-body-md text-on-surface-variant hover:text-crimson transition-all" href="#">Alerts</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<!-- Trailing Actions -->
+<button class="text-on-surface-variant hover:text-crimson transition-colors">
+<span class="material-symbols-outlined">notifications</span>
 </button>
+<button class="text-on-surface-variant hover:text-crimson transition-colors">
+<span class="material-symbols-outlined">share</span>
+</button>
+<button class="text-on-surface-variant hover:text-crimson transition-colors">
+<span class="material-symbols-outlined">account_circle</span>
+</button>
+<!-- Floating 3D Element in Header Area -->
+<div class="w-12 h-12 relative rounded-full overflow-hidden border border-crimson">
+<!-- STITCH_THREEJS_START:ANIMATION_10 class="absolute inset-0 w-full h-full" -->
+<div class="absolute inset-0 w-full h-full" style="display:block;">
+<script src="https://ajax.googleapis.com/ajax/libs/threejs/r125/three.min.js"></script>
+<div id="threejs-container-ANIMATION_10" style="width:100%;height:100%"></div>
+<script>
+(function() {
+  const container = document.getElementById('threejs-container-ANIMATION_10');
+  const devicePixelRatio = window.devicePixelRatio || 1;
+  const container = document.getElementById('threejs-container');
+const width = container.clientWidth || window.innerWidth;
+const height = container.clientHeight || window.innerHeight;
 
-<!-- Floating chat button + panel -->
-<button class="fab-chat" id="chat-toggle-btn" title="Ask Bhumi AI Assistant">💬</button>
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+camera.position.z = 5;
 
-<div class="chat-panel" id="chat-panel">
-    <div class="chat-header">
-        <span>💬 Bhumi AI Assistant</span>
-        <button class="chat-close" id="chat-close-btn">✕</button>
-    </div>
-    <div class="chat-messages" id="chat-messages">
-        <div class="chat-msg chat-msg-bot">
-            Hi! Ask me about farming/satellite terms, or about the farm you just calculated.
-        </div>
-    </div>
-    <div class="chat-input-row">
-        <input type="text" id="chat-input" placeholder="Ask a question…" maxlength="1000">
-        <button id="chat-send-btn">➤</button>
-    </div>
+const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+renderer.setSize(width, height);
+renderer.setPixelRatio(window.devicePixelRatio);
+container.appendChild(renderer.domElement);
+
+// Lighting
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.2);
+scene.add(ambientLight);
+
+const pointLight = new THREE.PointLight(0xff0000, 2);
+pointLight.position.set(2, 2, 5);
+scene.add(pointLight);
+
+// Sharingan Eye Group
+const sharinganGroup = new THREE.Group();
+
+// Outer Eye (White)
+const eyeGeom = new THREE.SphereGeometry(1.5, 32, 32);
+const eyeMat = new THREE.MeshPhongMaterial({ color: 0xeeeeee });
+const eye = new THREE.Mesh(eyeGeom, eyeMat);
+eye.scale.z = 0.5; // Flatten slightly
+sharinganGroup.add(eye);
+
+// Red Iris
+const irisGeom = new THREE.CircleGeometry(1, 64);
+const irisMat = new THREE.MeshPhongMaterial({ color: 0x991b1b, side: THREE.DoubleSide });
+const iris = new THREE.Mesh(irisGeom, irisMat);
+iris.position.z = 0.76;
+sharinganGroup.add(iris);
+
+// Pupil
+const pupilGeom = new THREE.CircleGeometry(0.2, 32);
+const pupilMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.DoubleSide });
+const pupil = new THREE.Mesh(pupilGeom, pupilMat);
+pupil.position.z = 0.77;
+sharinganGroup.add(pupil);
+
+// Tomoe (3 comma shapes)
+function createTomoe() {
+    const group = new THREE.Group();
+    const circle = new THREE.Mesh(new THREE.CircleGeometry(0.15, 32), pupilMat);
+    group.add(circle);
+    
+    // Comma tail
+    const curve = new THREE.EllipseCurve(0.1, 0, 0.2, 0.1, 0, Math.PI, false);
+    const points = curve.getPoints(50);
+    const tailGeom = new THREE.BufferGeometry().setFromPoints(points);
+    const tailLine = new THREE.Line(tailGeom, new THREE.LineBasicMaterial({ color: 0x000000 }));
+    // Simple triangle for tail is better for visibility
+    const shape = new THREE.Shape();
+    shape.moveTo(0, 0.15);
+    shape.quadraticCurveTo(0.3, 0.3, 0.4, 0);
+    shape.quadraticCurveTo(0.3, -0.3, 0, -0.15);
+    const tailMesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), pupilMat);
+    group.add(tailMesh);
+    return group;
+}
+
+for(let i=0; i<3; i++) {
+    const tomoe = createTomoe();
+    const angle = (i / 3) * Math.PI * 2;
+    tomoe.position.set(Math.cos(angle) * 0.6, Math.sin(angle) * 0.6, 0.78);
+    tomoe.rotation.z = angle + Math.PI/2;
+    sharinganGroup.add(tomoe);
+}
+
+scene.add(sharinganGroup);
+
+// Animation
+function animate() {
+    requestAnimationFrame(animate);
+    
+    // Slow eye movement
+    sharinganGroup.rotation.y = Math.sin(Date.now() * 0.001) * 0.2;
+    sharinganGroup.rotation.x = Math.cos(Date.now() * 0.001) * 0.1;
+    
+    // Iris spin
+    iris.rotation.z += 0.01;
+    sharinganGroup.children.forEach(child => {
+        if(child instanceof THREE.Group) child.rotation.z += 0.01;
+    });
+
+    renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', () => {
+    const w = container.clientWidth || window.innerWidth;
+    const h = container.clientHeight || window.innerHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+});
+
+animate();
+})();
+</script>
 </div>
-
-<!-- Crop disease diagnosis modal -->
-<div class="modal-overlay" id="diagnose-overlay">
-    <div class="modal-box">
-
-        <div class="modal-header">
-            <span>📋 Farm Evaluation — Crop Photo Diagnosis</span>
-            <button class="chat-close" id="diagnose-close-btn">✕</button>
-        </div>
-
-        <div class="modal-body">
-
-            <p class="diagnose-hint">
-                Upload a clear photo of an affected leaf or plant. Gemini's
-                vision model will estimate what it sees — this is an AI
-                estimate, not a substitute for a local agricultural
-                extension officer, especially before applying any
-                chemical treatment.
-            </p>
-
-            <label class="upload-drop" id="upload-drop">
-                <input type="file" id="diagnose-file-input" accept="image/jpeg,image/png,image/webp">
-                <span id="upload-drop-text">📷 Click to choose a photo (JPEG/PNG/WEBP, max 6MB)</span>
-                <img id="diagnose-preview" style="display:none;">
-            </label>
-
-            <button class="btn-detect" id="diagnose-submit-btn" disabled>Diagnose Photo</button>
-
-            <div class="diagnose-result" id="diagnose-result" style="display:none;"></div>
-
-        </div>
-
-    </div>
+<!-- STITCH_THREEJS_END:ANIMATION_10 -->
 </div>
-
-<!-- Hyperspectral / Spectral Intelligence modal -->
-<div class="modal-overlay" id="spectral-overlay">
-    <div class="modal-box spectral-modal-box">
-
-        <div class="modal-header">
-            <span>🔬 Spectral Intelligence — Crop Health Engine</span>
-            <button class="chat-close" id="spectral-close-btn">✕</button>
-        </div>
-
-        <div class="modal-body">
-
-            <p class="diagnose-hint" id="spectral-method-note">
-                Estimated from Sentinel-2 multispectral bands (NDVI · NDRE · GNDVI · NDMI · MSI) —
-                true hyperspectral imagery isn't available for arbitrary coordinates, so this is a
-                validated multispectral-proxy approximation, not raw hyperspectral data.
-            </p>
-
-            <div id="spectral-loading" class="spectral-loading" style="display:none;">
-                <div class="spinner"></div>
-                <span>Querying Sentinel-2 spectral bands…</span>
-            </div>
-
-            <div id="spectral-content" style="display:none;">
-
-                <div class="spectral-score-row">
-                    <div class="mini-score-ring spectral-ring">
-                        <svg viewBox="0 0 130 130">
-                            <circle cx="65" cy="65" r="54" fill="none" stroke="#22303c" stroke-width="14"/>
-                            <circle
-                                cx="65" cy="65" r="54" fill="none"
-                                stroke="#38bdf8" stroke-width="14"
-                                stroke-linecap="round"
-                                stroke-dasharray="339.3"
-                                stroke-dashoffset="339.3"
-                                id="spectral-ring-arc"
-                                transform="rotate(-90 65 65)"/>
-                        </svg>
-                        <div class="mini-score-center">
-                            <span id="spectral-final-score">—</span>
-                        </div>
-                    </div>
-                    <div>
-                        <div class="score-grade" id="spectral-grade">—</div>
-                        <div class="coord-display">Spectral Health / 100</div>
-                    </div>
-                </div>
-
-                <div id="spectral-flags" class="spectral-flags"></div>
-
-                <div class="panel-title spectral-subtitle">📊 Index Breakdown</div>
-                <div id="spectral-params-grid" class="params-grid"></div>
-
-                <div class="panel-title spectral-subtitle">✨ AI Recommendations</div>
-                <div id="spectral-recommendations" class="spectral-recs"></div>
-
-            </div>
-
-            <div id="spectral-error" class="diag-not-plant" style="display:none;"></div>
-
-        </div>
-
-    </div>
 </div>
+</header>
+<!-- Main Canvas -->
+<main class="md:ml-64 p-margin-desktop min-h-screen">
+<!-- Dashboard Grid -->
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-gutter">
+<!-- Left Column: Map & Primary Data (Spans 2 cols on Desktop) -->
+<div class="xl:col-span-2 flex flex-col gap-gutter">
+<!-- Map Container -->
+<div class="bg-surface-container rounded-xl border border-crimson-dark overflow-hidden relative h-[400px] crimson-glow">
+<!-- Map Image Placeholder with Red Overlay Filter -->
+<div class="absolute inset-0 bg-cover bg-center mix-blend-overlay opacity-60" data-alt="A top-down satellite view of a sprawling agricultural field near a forest edge. The imagery is tinted with a deep, moody crimson red overlay, giving it an intense, strategic, and slightly ominous atmosphere. High tech grid lines faint in the background." data-location="Kyoto" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuAWAajtJkdNhPJWavX7ZbaY29LzU46wIQr6or_RwBHC2PBSZkyDFiYMBfU4WobvkOwzqAW5blkiXr1C0L3YubybiZCIpKZOh2TaRBxbeES2S4WjTrA73bgzfaeFRWNKLqXHQnVJFFd3huX6Fj-Oo-JxdEzZJ0Q8ehLY2kvzFYlYlat9QPlZi67C3MzwQnxgoRwVI1g23zQ__swUFw2qKjFMmSFEVn2MHxXl7t7IH_y91K8YyePLRHAMzg')"></div>
+<div class="absolute inset-0 bg-gradient-to-t from-surface-container to-transparent opacity-80"></div>
+<!-- Map Overlays -->
+<div class="absolute top-4 left-4 flex gap-2">
+<button class="bg-surface-container-high text-crimson px-3 py-1 rounded-full font-label-caps border border-crimson">NDVI</button>
+<button class="bg-surface-container/80 text-cool-gray px-3 py-1 rounded-full font-label-caps border border-outline-variant hover:text-on-surface">RGB</button>
+</div>
+<div class="absolute bottom-4 left-4">
+<h2 class="font-headline-md text-white drop-shadow-md">Amaterasu Sector 4</h2>
+<p class="font-data-md text-crimson">Coordinates: 35.0116° N, 135.7681° E</p>
+</div>
+</div>
+<!-- Metrics Bento -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-gutter">
+<!-- Satellite Status -->
+<div class="bg-[#171f33] rounded-xl border border-[#991b1b] p-5 relative overflow-hidden group">
+<div class="absolute top-0 right-0 w-16 h-16 bg-crimson/10 rounded-bl-full transition-transform group-hover:scale-110"></div>
+<div class="flex items-center gap-2 mb-4 text-cool-gray">
+<span class="material-symbols-outlined">satellite_alt</span>
+<span class="font-body-md uppercase tracking-wider text-xs">Uplink Status</span>
+</div>
+<div class="flex flex-col gap-1">
+<span class="font-data-lg text-crimson drop-shadow-[0_0_8px_rgba(220,38,38,0.8)]">Sentinel-2 Active</span>
+<span class="font-body-md text-cool-gray">Latency: 12ms | Coverage: 100%</span>
+</div>
+</div>
+<!-- Soil Moisture -->
+<div class="bg-[#171f33] rounded-xl border border-[#991b1b] p-5">
+<div class="flex items-center gap-2 mb-4 text-cool-gray">
+<span class="material-symbols-outlined">water_drop</span>
+<span class="font-body-md uppercase tracking-wider text-xs">Soil Moisture</span>
+</div>
+<div class="flex items-end gap-3">
+<span class="font-display-lg text-white">42<span class="text-crimson">%</span></span>
+<span class="font-data-md text-crimson mb-2">-3% vs avg</span>
+</div>
+<!-- Progress Bar -->
+<div class="w-full h-2 bg-surface-container-high rounded-full mt-4 overflow-hidden">
+<div class="h-full bg-crimson rounded-full" style="width: 42%"></div>
+</div>
+</div>
+</div>
+</div>
+<!-- Right Column: AI Insights & Score -->
+<div class="flex flex-col gap-gutter">
+<!-- Bhumi Score Card -->
+<div class="bg-[#171f33] rounded-xl border border-[#991b1b] p-6 flex flex-col items-center justify-center relative overflow-hidden crimson-glow">
+<!-- Subtle gradient background -->
+<div class="absolute inset-0 bg-gradient-to-br from-surface-container to-surface-container-high z-0"></div>
+<h3 class="font-headline-sm text-white mb-6 z-10 relative">Farm Health Score</h3>
+<!-- Circular Gauge -->
+<div class="relative w-40 h-40 flex items-center justify-center z-10 mb-4">
+<svg class="w-full h-full transform -rotate-90" viewbox="0 0 100 100">
+<!-- Background Circle -->
+<circle cx="50" cy="50" fill="transparent" r="40" stroke="#2d3449" stroke-width="8"></circle>
+<!-- Foreground Circle (Crimson) -->
+<circle class="drop-shadow-[0_0_5px_rgba(220,38,38,1)]" cx="50" cy="50" fill="transparent" r="40" stroke="#dc2626" stroke-dasharray="251.2" stroke-dashoffset="62.8" stroke-linecap="round" stroke-width="8"></circle>
+</svg>
+<div class="absolute flex flex-col items-center">
+<span class="font-display-lg text-white leading-none">75</span>
+<span class="font-label-caps text-crimson mt-1">/100</span>
+</div>
+</div>
+<p class="font-body-md text-cool-gray text-center z-10">Optimal conditions detected. Slight irrigation needed in Sector 2.</p>
+</div>
+<!-- AI Insights List -->
+<div class="bg-[#171f33] rounded-xl border border-[#991b1b] p-5 flex-1 flex flex-col">
+<div class="flex items-center gap-2 mb-4 border-b border-outline-variant pb-3">
+<span class="material-symbols-outlined text-crimson">psychology</span>
+<h3 class="font-headline-sm text-white">Genjutsu Insights</h3>
+</div>
+<ul class="flex flex-col gap-4 flex-1">
+<li class="flex gap-3 items-start p-3 bg-surface-container-high rounded-lg border-l-2 border-crimson">
+<span class="material-symbols-outlined text-crimson mt-0.5">warning</span>
+<div>
+<h4 class="font-data-md text-white mb-1">Pest Anomaly Detected</h4>
+<p class="font-body-md text-cool-gray text-sm">Spectral variance in North field suggests early stage infestation.</p>
+</div>
+</li>
+<li class="flex gap-3 items-start p-3 hover:bg-surface-container-high rounded-lg transition-colors border-l-2 border-transparent hover:border-outline-variant">
+<span class="material-symbols-outlined text-cool-gray mt-0.5">trending_up</span>
+<div>
+<h4 class="font-data-md text-cool-gray mb-1">Yield Projection +5%</h4>
+<p class="font-body-md text-cool-gray text-sm">Recent weather patterns favor current crop cycle.</p>
+</div>
+</li>
+</ul>
+</div>
+</div>
+</div>
+</main>
+<!-- BottomNavBar (Mobile Only) -->
+<nav class="md:hidden fixed bottom-0 w-full bg-surface-container border-t border-crimson-dark z-20 pb-4 pt-2 px-4 shadow-[0_-4px_15px_rgba(153,27,27,0.2)]">
+<ul class="flex justify-around items-center">
+<li>
+<a class="flex flex-col items-center gap-1 text-crimson font-bold" href="#">
+<span class="material-symbols-outlined fill">dashboard</span>
+<span class="font-label-caps">Dashboard</span>
+</a>
+</li>
+<li>
+<a class="flex flex-col items-center gap-1 text-cool-gray hover:text-crimson" href="#">
+<span class="material-symbols-outlined">agriculture</span>
+<span class="font-label-caps">Farm</span>
+</a>
+</li>
+<li>
+<a class="flex flex-col items-center gap-1 text-cool-gray hover:text-crimson" href="#">
+<span class="material-symbols-outlined">satellite_alt</span>
+<span class="font-label-caps">Satellite</span>
+</a>
+</li>
+</ul>
+</nav>
+<!-- Ember Animation Script -->
+<script>
+        function createEmber() {
+            const ember = document.createElement('div');
+            ember.classList.add('ember');
+            
+            // Random properties
+            const size = Math.random() * 4 + 2; // 2px to 6px
+            const left = Math.random() * 100; // 0% to 100% width
+            const duration = Math.random() * 2 + 2; // 2s to 4s
+            
+            ember.style.width = `${size}px`;
+            ember.style.height = `${size}px`;
+            ember.style.left = `${left}vw`;
+            ember.style.bottom = '-10px';
+            ember.style.animationDuration = `${duration}s`;
+            
+            document.body.appendChild(ember);
+            
+            // Remove after animation
+            setTimeout(() => {
+                ember.remove();
+            }, duration * 1000);
+        }
 
-<script src="shell.js"></script>
-<script src="app.js"></script>
-
-</body>
-</html>
+        // Generate embers periodically
+        setInterval(createEmber, 300);
+    </script>
+</body></html>

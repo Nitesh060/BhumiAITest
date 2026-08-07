@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bhumi AI — Portfolio &amp; Admin</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+
+<div class="app-shell">
+
+    <aside class="side-nav">
+        <div class="nav-logo">
+            <div class="logo-mark">🌱</div>
+            <div>
+                <h1>Bhumi AI</h1>
+                <p>Smart Land. Strong Future.</p>
+            </div>
+        </div>
+
+        <nav class="nav-links">
+            <a class="nav-link" href="index.html"><span>🏠</span> Dashboard</a>
+            <a class="nav-link" id="nav-diagnose-btn"><span>📋</span> Farm Evaluation</a>
+            <a class="nav-link" href="report.html"><span>📄</span> Extended Report</a>
+            <a class="nav-link" href="glossary.html"><span>📚</span> Glossary</a>
+            <a class="nav-link" href="farm-management.html"><span>🧑‍🌾</span> Farm Management</a>
+            <a class="nav-link" href="satellite-intelligence.html"><span>🛰️</span> Satellite Intelligence</a>
+            <a class="nav-link" href="crop-intelligence.html"><span>🌾</span> Crop Intelligence</a>
+            <a class="nav-link" href="insurance-claim.html"><span>🛡️</span> Insurance Claims</a>
+            <a class="nav-link active" href="dashboard-overview.html"><span>📊</span> Portfolio &amp; Admin</a>
+        </nav>
+
+        <div class="nav-footer-card">
+            <div class="nfc-title">Portfolio Overview</div>
+            <p>Aggregate view across all registered farmers and farms.</p>
+        </div>
+    </aside>
+
+    <div class="main-col">
+
+        <header class="top-bar">
+            <div>
+                <h2 style="margin:0;font-size:1rem;">📊 Portfolio &amp; Admin</h2>
+                <p class="panel-subtitle" style="margin:2px 0 0;">Aggregate stats + user management</p>
+            </div>
+        </header>
+
+        <div class="error-box" id="error-box"></div>
+
+        <div class="panel-card" style="margin:14px 0;">
+            <div class="panel-title">📊 Portfolio Summary</div>
+            <div id="portfolio-list" class="enrichment-list"></div>
+        </div>
+
+        <div class="panel-card" style="margin-bottom:14px;">
+            <div class="panel-title">🗺️ Survey Method Breakdown</div>
+            <div id="survey-breakdown-table"></div>
+        </div>
+
+        <div class="panel-card" style="margin-bottom:14px;">
+            <div class="panel-title">📍 Farmers by District</div>
+            <div id="district-breakdown-table"></div>
+        </div>
+
+        <!-- ============ Admin-only section ============ -->
+        <div class="panel-card" id="admin-section" style="display:none;margin-bottom:14px;">
+            <div class="panel-title">👤 User Management <span class="panel-subtitle">Admin only</span></div>
+
+            <form id="add-user-form" class="fm-form">
+                <input type="text" id="new-user-name" placeholder="Full name *" required />
+                <input type="text" id="new-user-username" placeholder="Username *" required />
+                <input type="password" id="new-user-password" placeholder="Password *" required />
+                <select id="new-user-role">
+                    <option value="field_officer">Field Officer</option>
+                    <option value="admin">Admin</option>
+                </select>
+                <button type="submit" class="btn-detect">+ Add User</button>
+            </form>
+
+            <div id="users-list" class="fm-list" style="margin-top:12px;"></div>
+        </div>
+
+        <footer class="app-footer">
+            <span>📊 Portfolio Dashboard</span>
+            <span>Aggregated from Farm Management records.</span>
+        </footer>
+
+    </div>
+</div>
+
+<script src="shell.js"></script>
+<script src="dashboard-overview.js"></script>
+</body>
+</html>

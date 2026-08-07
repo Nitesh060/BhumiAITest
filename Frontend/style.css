@@ -1712,7 +1712,8 @@ body {
     margin-bottom: 10px;
 }
 
-.fm-form input {
+.fm-form input,
+.fm-form select {
     background: var(--bg, #0a0f0d);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -1720,6 +1721,18 @@ body {
     color: var(--text);
     font-size: 0.76rem;
     font-family: var(--font-display, inherit);
+    box-sizing: border-box;
+    width: 100%;
+}
+
+.fm-form select {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%), linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+    background-position: calc(100% - 14px) center, calc(100% - 9px) center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    cursor: pointer;
 }
 
 .fm-search {

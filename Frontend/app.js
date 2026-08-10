@@ -1005,6 +1005,61 @@ function renderResult(data) {
     });
 })();
 
+async function calculateComprehensiveScore(lat, lng) {
+    const card = document.getElementById("comprehensive-score-card");
+    if (!card) return null;
+
+    const valueEl = document.getElementById("comprehensive-score-value");
+    const gradeEl = document.getElementById("comprehensive-score-grade");
+    const paramsEl = document.getElementById("comprehensive-score-params");
+    const statusEl = document.getElementById("comprehensive-score-status");
+
+    card.style.display = "block";
+    valueEl.textContent = "Computing…";
+    gradeEl.textContent = "";
+    paramsEl.textContent = "Fetching 20 parameters…";
+    statusEl.textContent = "This may take 20–40 seconds…";
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/comprehensive-score`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                lat: lat,
+                lng: lng,
+                polygon: farmPolygon || null
+            })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || data.score_0_100 == null) {
+            throw new Error(data.reason || data.error || `Server error ${response.status}`);
+        }
+
+        valueEl.textContent = `${data.score_0_100} / 100`;
+        gradeEl.textContent = `${data.grade} · ${data.score_300_900}/900`;
+        paramsEl.textContent = `${data.parameters_used} of ${data.parameters_total} parameters available`;
+        statusEl.textContent = "20-parameter weighted analysis complete";
+
+        // Cache the latest comprehensive result for the detailed page if needed.
+        try {
+            sessionStorage.setItem("comprehensive_score_last_result", JSON.stringify(data));
+        } catch (err) {
+            console.warn("Could not cache comprehensive score:", err);
+        }
+
+        return data;
+    } catch (err) {
+        console.error("Comprehensive Score Error:", err);
+        valueEl.textContent = "N/A";
+        gradeEl.textContent = "Unable to calculate";
+        paramsEl.textContent = "";
+        statusEl.textContent = err.message || "Could not compute comprehensive score.";
+        return null;
+    }
+}
+
 /* ===================================================================
    Compute Score — single entry point called on button click
    =================================================================== */
@@ -1034,6 +1089,11 @@ async function computeScore() {
         btnText.textContent = "Querying Earth Engine…";
         const result = await calculateFarmScore(lat, lng);
         renderResult(result);
+
+        // Automatically calculate the 20-parameter Comprehensive Score
+        // after the standard FarmScore succeeds.
+        btnText.textContent = "Calculating Comprehensive Score…";
+        await calculateComprehensiveScore(lat, lng);
     } catch (err) {
         errBox.textContent = err.message || "An unexpected error occurred.";
         errBox.style.display = "block";

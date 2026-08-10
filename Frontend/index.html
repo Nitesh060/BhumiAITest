@@ -37,14 +37,13 @@
 
         <nav class="nav-links">
             <a class="nav-link active" href="index.html"><span>🏠</span> Dashboard</a>
-            <a class="nav-link" id="nav-diagnose-btn"><span>📋</span> Farm Evaluation</a>
-            <a class="nav-link" href="report.html"><span>📄</span> Extended Report</a>
-            <a class="nav-link" href="glossary.html"><span>📚</span> Glossary</a>
-            <a class="nav-link" href="farm-management.html"><span>🧑‍🌾</span> Farm Management</a>
-            <a class="nav-link" href="satellite-intelligence.html"><span>🛰️</span> Satellite Intelligence</a>
-            <a class="nav-link" href="crop-intelligence.html"><span>🌾</span> Crop Intelligence</a>
-            <a class="nav-link" href="insurance-claim.html"><span>🛡️</span> Insurance Claims</a>
-            <a class="nav-link" href="dashboard-overview.html"><span>📊</span> Portfolio &amp; Admin</a>
+            <a class="nav-link" href="#map"><span>🗺️</span> Map Explorer</a>
+            <a class="nav-link" href="#score-breakdown"><span>🌱</span> Land Analysis</a>
+            <a class="nav-link" href="comprehensive-score.html"><span>🎯</span> FarmScore</a>
+            <a class="nav-link" href="#loan-eligibility"><span>🏦</span> Loan Eligibility</a>
+            <a class="nav-link" href="report.html"><span>📄</span> Reports</a>
+            <a class="nav-link" id="nav-diagnose-btn"><span>🎧</span> Support</a>
+            <a class="nav-link" href="dashboard-overview.html"><span>⚙️</span> Settings</a>
         </nav>
 
         <div class="nav-footer-card">
@@ -77,6 +76,20 @@
         </header>
 
         <div class="error-box" id="error-box"></div>
+
+        <section class="hero-strip">
+            <div class="hero-copy">
+                <div class="eyebrow">BHUMI AI · AGRICULTURAL INTELLIGENCE</div>
+                <h2>Know Your Land.<br><span>Grow Your Future.</span></h2>
+                <p>AI-powered agricultural suitability and credit intelligence for Bharat.</p>
+            </div>
+            <div class="hero-features">
+                <div class="hero-feature"><span>◫</span><strong>AI-Powered</strong><small>Analysis</small></div>
+                <div class="hero-feature"><span>↗</span><strong>Accurate</strong><small>Insights</small></div>
+                <div class="hero-feature"><span>▣</span><strong>Credit</strong><small>Intelligence</small></div>
+                <div class="hero-feature"><span>◎</span><strong>Better</strong><small>Decisions</small></div>
+            </div>
+        </section>
 
         <!-- Info strip -->
         <div class="info-strip">
@@ -179,7 +192,7 @@
 
                 <div class="bottom-row">
 
-                    <div class="panel-card">
+                    <div class="panel-card" id="score-breakdown">
                         <div class="panel-title">📊 Score Breakdown</div>
                         <div id="params-grid" class="params-grid">
                             <p class="empty-hint">Calculate a Bhumi AI Score to see the breakdown.</p>
@@ -211,6 +224,17 @@
             <!-- Right column -->
             <div class="right-column">
 
+                <div class="panel-card calculate-card">
+                    <div class="panel-title">🌿 Calculate FarmScore</div>
+                    <div class="calculate-tabs"><span class="active">By Location</span><span>By Map</span></div>
+                    <div class="calculate-summary">
+                        <div><span>Latitude</span><strong id="visible-lat">Select location</strong></div>
+                        <div><span>Longitude</span><strong id="visible-lng">Select location</strong></div>
+                    </div>
+                    <button class="calculate-main-btn" id="calc-btn" type="button"><span id="btn-text">✨ Calculate Bhumi AI Score</span></button>
+                    <p class="calculate-note">Get AI-powered farm suitability, crop recommendation, comprehensive score and loan intelligence.</p>
+                </div>
+
                 <div class="panel-card nearby-card" id="nearby-resources-card">
                     <div class="panel-title">
                         📍 Nearby Resources
@@ -238,7 +262,7 @@
                     <button type="button" id="get-risk-btn" class="btn-detect">Get Risk Analysis</button>
                 </div>
 
-                <div class="panel-card loan-card">
+                <div class="panel-card loan-card" id="loan-eligibility">
                     <div class="panel-title">🏦 Loan Eligibility Suggestion</div>
                     <div class="loan-status" id="loan-status">—</div>
                     <p class="loan-desc" id="loan-desc">Calculate a Bhumi AI Score to see a suggestion.</p>
@@ -286,12 +310,6 @@
     </div>
 
 </div>
-
-<!-- Floating action button — the real, single Calculate control -->
-<button class="fab-calculate" id="calc-btn">
-    <span class="fab-icon">📊</span>
-    <span id="btn-text">Calculate Bhumi AI Score</span>
-</button>
 
 <!-- Floating chat button + panel -->
 <button class="fab-chat" id="chat-toggle-btn" title="Ask Bhumi AI Assistant">💬</button>

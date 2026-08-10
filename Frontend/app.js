@@ -154,6 +154,11 @@ function formatCoords(lat, lng) {
 function selectLocation(lat, lng) {
     document.getElementById("lat-input").value = lat.toFixed(6);
     document.getElementById("lng-input").value = lng.toFixed(6);
+
+    const visibleLat = document.getElementById("visible-lat");
+    const visibleLng = document.getElementById("visible-lng");
+    if (visibleLat) visibleLat.textContent = lat.toFixed(4) + "°";
+    if (visibleLng) visibleLng.textContent = lng.toFixed(4) + "°";
     placeMarker(lat, lng);
 
     const coordsEl = document.getElementById("selected-location-coords");

@@ -44,6 +44,7 @@ from yield_prediction import estimate_yield, compute_polygon_area_ha
 import db as db_module
 import farm_management_service as fms
 import auth_service
+import governance_service
 from spectral_indices import fetch_extended_indices, fetch_sar_moisture
 from historical_timeline_service import fetch_ndvi_historical_timeline, fetch_before_after_comparison
 from enrichment_service import fetch_vegetation_heatmap
@@ -64,6 +65,9 @@ from weather_soil_terrain_service import (
 )
 from enrichment_service import fetch_topography as _fetch_topography_for_flood
 from spectral_indices import fetch_sar_moisture as _fetch_sar_for_flood
+from spectral_indices import fetch_extended_indices
+from weather_indices_service import fetch_solar_radiation, fetch_spi, fetch_gdd, fetch_spei_proxy
+from comprehensive_score_service import compute_comprehensive_score, DEFAULT_WEIGHTS
 from credit_intelligence_service import (
     estimate_income,
     compute_bcis_score,
@@ -970,13 +974,36 @@ def credit_intelligence_route():
         loan_ceiling = recommend_loan_ceiling(income, bcis, policy_max_rs=body.get("policy_max_rs"))
         freeze = auto_freeze_check(bcis)
 
-        return jsonify({
+        result = {
             "income_estimate": income,
             "bcis": bcis,
             "loan_ceiling": loan_ceiling,
             "auto_freeze": freeze,
             "flood_risk_used": flood_risk,
-        }), 200
+        }
+
+        # Audit trail — every BCIS/loan-ceiling/auto-freeze decision gets
+        # logged (RBI evidence-pack requirement). Never lets a logging
+        # failure break the actual response.
+        if db_module.is_db_configured():
+            session = db_module.get_session()
+            try:
+                governance_service.log_event(
+                    session, event_type="bcis_score",
+                    summary=f"BCIS {bcis['score']}/100 ({bcis['tier']}), loan ceiling {loan_ceiling.get('loan_ceiling_rs')}",
+                    detail=result, user_id=getattr(request, "user", {}).get("user_id"),
+                    farmer_id=body.get("farmer_id"), farm_id=body.get("farm_id"), lat=lat, lng=lng,
+                )
+                if freeze["frozen"]:
+                    governance_service.log_event(
+                        session, event_type="auto_freeze", summary=freeze["reason"],
+                        detail=freeze, user_id=getattr(request, "user", {}).get("user_id"),
+                        farmer_id=body.get("farmer_id"), farm_id=body.get("farm_id"), lat=lat, lng=lng,
+                    )
+            finally:
+                session.close()
+
+        return jsonify(result), 200
     except Exception as exc:
         logger.exception("credit-intelligence failed")
         return jsonify({"error": "Failed to compute credit intelligence", "detail": str(exc)}), 502
@@ -1016,6 +1043,18 @@ def insurance_claim_route():
 
         fraud = detect_fraud_signals(acreage_check, crop_check, identification.get("peak_ndvi"))
         claim = assess_claim(acreage_check, crop_check, loss, fraud)
+
+        if db_module.is_db_configured():
+            session = db_module.get_session()
+            try:
+                governance_service.log_event(
+                    session, event_type="insurance_claim",
+                    summary=f"Claim recommendation: {claim['recommendation']} — {claim['reason']}",
+                    detail=claim, user_id=getattr(request, "user", {}).get("user_id"),
+                    farmer_id=body.get("farmer_id"), farm_id=body.get("farm_id"), lat=lat, lng=lng,
+                )
+            finally:
+                session.close()
 
         return jsonify(claim), 200
     except Exception as exc:
@@ -1179,6 +1218,245 @@ def portfolio_summary_route():
         }), 200
     finally:
         session.close()
+
+
+@app.route("/audit-log", methods=["GET"])
+@auth_service.require_auth(["admin"])
+def audit_log_route():
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    session = db_module.get_session()
+    try:
+        event_type = request.args.get("event_type")
+        farmer_id = request.args.get("farmer_id")
+        limit = min(int(request.args.get("limit", 100)), 500)
+        events = governance_service.list_events(session, event_type=event_type, farmer_id=farmer_id, limit=limit)
+        include_detail = request.args.get("include_detail") == "true"
+        return jsonify({"events": [e.to_dict(include_detail=include_detail) for e in events]}), 200
+    finally:
+        session.close()
+
+
+@app.route("/farmers/<farmer_id>/consent", methods=["GET"])
+@auth_service.require_auth()
+def get_consent_route(farmer_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    session = db_module.get_session()
+    try:
+        records = fms.get_consents_for_farmer(session, farmer_id)
+        return jsonify({"consents": [r.to_dict() for r in records]}), 200
+    finally:
+        session.close()
+
+
+@app.route("/farmers/<farmer_id>/consent", methods=["POST"])
+@auth_service.require_auth()
+def set_consent_route(farmer_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    body = request.get_json(silent=True) or {}
+    consent_type, granted = body.get("consent_type"), body.get("granted")
+    if not consent_type or granted is None:
+        return jsonify({"error": "'consent_type' and 'granted' (true/false) are required"}), 400
+
+    session = db_module.get_session()
+    try:
+        record = fms.set_consent(session, farmer_id, consent_type, bool(granted), notes=body.get("notes"))
+        governance_service.log_event(
+            session, event_type="consent_change",
+            summary=f"Consent '{consent_type}' set to {'granted' if granted else 'revoked'} for farmer {farmer_id}",
+            detail=record.to_dict(), user_id=getattr(request, "user", {}).get("user_id"), farmer_id=farmer_id,
+        )
+        return jsonify(record.to_dict()), 200
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    finally:
+        session.close()
+
+
+@app.route("/farmers/<farmer_id>/request-deletion", methods=["POST"])
+@auth_service.require_auth()
+def request_deletion_route(farmer_id):
+    """DPDP-style deletion request — flags the farmer's consent records
+    with a timestamp (the '72 hours' clock start). Does NOT delete data
+    automatically; an admin/ops person must complete the actual
+    deletion as a deliberate, irreversible step.
+    """
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    body = request.get_json(silent=True) or {}
+    session = db_module.get_session()
+    try:
+        result = fms.request_deletion(session, farmer_id, notes=body.get("notes"))
+        governance_service.log_event(
+            session, event_type="deletion_request", summary=f"Deletion requested for farmer {farmer_id}",
+            detail=result, user_id=getattr(request, "user", {}).get("user_id"), farmer_id=farmer_id,
+        )
+        return jsonify(result), 200
+    finally:
+        session.close()
+
+
+@app.route("/farmers/<farmer_id>/loans", methods=["POST"])
+@auth_service.require_auth()
+def create_loan_route(farmer_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    body = request.get_json(silent=True) or {}
+    session = db_module.get_session()
+    try:
+        loan = governance_service.create_loan(
+            session, farmer_id=farmer_id, farm_id=body.get("farm_id"),
+            requested_amount_rs=body.get("requested_amount_rs"),
+            crop=body.get("crop"), season=body.get("season"),
+        )
+        governance_service.log_event(
+            session, event_type="loan_stage_change",
+            summary=f"Loan created for farmer {farmer_id} — stage 'Application'",
+            detail=loan.to_dict(), user_id=getattr(request, "user", {}).get("user_id"),
+            farmer_id=farmer_id, farm_id=body.get("farm_id"),
+        )
+        return jsonify(loan.to_dict()), 201
+    finally:
+        session.close()
+
+
+@app.route("/farmers/<farmer_id>/loans", methods=["GET"])
+@auth_service.require_auth()
+def list_loans_route(farmer_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    session = db_module.get_session()
+    try:
+        loans = governance_service.list_loans_for_farmer(session, farmer_id)
+        return jsonify({"loans": [l.to_dict() for l in loans]}), 200
+    finally:
+        session.close()
+
+
+@app.route("/loans/<loan_id>/advance", methods=["POST"])
+@auth_service.require_auth()
+def advance_loan_route(loan_id):
+    """Moves a loan to the next stage: Application -> Disbursement ->
+    In-Season -> Pre-Harvest -> Renewal (matches the Bhumi doc's
+    5-stage loan lifecycle). Cannot move backward.
+    """
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    body = request.get_json(silent=True) or {}
+    new_stage = body.get("stage")
+    if not new_stage:
+        return jsonify({"error": "'stage' is required"}), 400
+
+    session = db_module.get_session()
+    try:
+        result = governance_service.advance_loan_stage(
+            session, loan_id, new_stage,
+            approved_ceiling_rs=body.get("approved_ceiling_rs"),
+            bcis_tier_at_approval=body.get("bcis_tier_at_approval"),
+        )
+        if result is None:
+            return jsonify({"error": "Loan not found"}), 404
+        if "error" in result:
+            return jsonify(result), 400
+
+        loan = result["loan"]
+        governance_service.log_event(
+            session, event_type="loan_stage_change",
+            summary=f"Loan {loan_id} moved from '{result['old_stage']}' to '{result['new_stage']}'",
+            detail=loan, user_id=getattr(request, "user", {}).get("user_id"),
+            farmer_id=loan.get("farmer_id"), farm_id=loan.get("farm_id"), loan_id=loan_id,
+        )
+        return jsonify(loan), 200
+    finally:
+        session.close()
+
+
+@app.route("/comprehensive-score", methods=["POST"])
+def comprehensive_score_route():
+    """Computes the 20-parameter weighted-average score (Vegetation +
+    Radar + Weather + Temperature). Fetches every parameter in
+    parallel from the existing modules that already compute them —
+    nothing here is a duplicate satellite call for indices already
+    available elsewhere in this app.
+    """
+    body = request.get_json(silent=True) or {}
+    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
+    custom_weights = body.get("weights")  # optional override
+
+    if lat is None or lng is None:
+        return jsonify({"error": "'lat' and 'lng' are required"}), 400
+
+    try:
+        lat, lng = float(lat), float(lng)
+    except (TypeError, ValueError):
+        return jsonify({"error": "'lat' and 'lng' must be numbers"}), 400
+
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
+    def _safe(name, fn, *args):
+        try:
+            return name, fn(*args)
+        except Exception:
+            logger.exception("comprehensive-score sub-fetch '%s' failed (non-fatal)", name)
+            return name, None
+
+    with _TPE(max_workers=6) as pool:
+        futures = [
+            pool.submit(_safe, "satellite", fetch_farm_data, lat, lng, polygon),
+            pool.submit(_safe, "extended_indices", fetch_extended_indices, lat, lng, polygon),
+            pool.submit(_safe, "spectral", calculate_spectral_intelligence, lat, lng, polygon),
+            pool.submit(_safe, "sar", _fetch_sar_for_flood, lat, lng, polygon),
+            pool.submit(_safe, "solar", fetch_solar_radiation, lat, lng, polygon),
+            pool.submit(_safe, "spi", fetch_spi, lat, lng, polygon),
+            pool.submit(_safe, "gdd", fetch_gdd, lat, lng, polygon),
+            pool.submit(_safe, "spei", fetch_spei_proxy, lat, lng, polygon),
+        ]
+        results = {name: val for name, val in (f.result() for f in futures)}
+
+    satellite = results.get("satellite") or {}
+    extended = results.get("extended_indices") or {}
+    spectral = results.get("spectral") or {}
+    sar = results.get("sar") or {}
+    solar = results.get("solar") or {}
+    spi = results.get("spi") or {}
+    gdd = results.get("gdd") or {}
+    spei = results.get("spei") or {}
+
+    ndre_val = None
+    if spectral.get("indices", {}).get("nitrogen"):
+        ndre_val = spectral["indices"]["nitrogen"].get("raw_value")
+
+    raw_values = {
+        "ndvi": satellite.get("ndvi"),
+        "evi": extended.get("evi"),
+        "savi": extended.get("savi"),
+        "msavi": extended.get("msavi"),
+        "ndre": ndre_val,
+        "ndmi": satellite.get("ndmi"),
+        "ndwi": extended.get("ndwi"),
+        "ci_green": extended.get("ci_green"),
+        "ci_rededge": extended.get("ci_rededge"),
+        "vv": sar.get("vv_db") if sar.get("available") else None,
+        "vh": sar.get("vh_db") if sar.get("available") else None,
+        "vh_vv": sar.get("vh_vv_ratio") if sar.get("available") else None,
+        "rvi": sar.get("rvi") if sar.get("available") else None,
+        "rainfall": satellite.get("rainfall"),
+        "air_temp": satellite.get("temperature"),
+        "solar_radiation": solar.get("avg_daily_solar_radiation_mj_m2") if solar.get("available") else None,
+        "spi": spi.get("spi") if spi.get("available") else None,
+        "spei": spei.get("spei_proxy") if spei.get("available") else None,
+        "gdd": gdd.get("gdd") if gdd.get("available") else None,
+        "lst": satellite.get("temperature"),
+    }
+
+    weights = custom_weights if custom_weights else DEFAULT_WEIGHTS
+    result = compute_comprehensive_score(raw_values, weights=weights)
+    result["coordinates"] = {"lat": lat, "lng": lng}
+    result["raw_fetch_detail"] = {"spi": spi, "spei": spei, "gdd": gdd, "solar_radiation": solar, "sar": sar}
+
+    return jsonify(result), 200
 
 
 @app.route("/glossary", methods=["GET"])

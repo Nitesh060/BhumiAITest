@@ -21,7 +21,7 @@
 
 const API_BASE_URL =
     window.FARMSCORE_API_URL ||
-    "https://bhumiaitest.onrender.com";
+    "https://farmprototype.onrender.com";
 
 async function calculateFarmScore(lat, lng) {
     const url = `${API_BASE_URL}/calculate`;

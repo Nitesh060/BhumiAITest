@@ -14,7 +14,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, Response
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 
 from earth_engine_service import fetch_farm_data, initialise_earth_engine
 from scoring import calculate_score
@@ -1373,7 +1373,8 @@ def advance_loan_route(loan_id):
         session.close()
 
 
-@app.route("/comprehensive-score", methods=["POST"])
+@app.route("/comprehensive-score", methods=["POST", "OPTIONS"])
+@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type", "Authorization"])
 def comprehensive_score_route():
     """Computes the 20-parameter weighted-average score (Vegetation +
     Radar + Weather + Temperature). Fetches every parameter in
@@ -1381,6 +1382,11 @@ def comprehensive_score_route():
     nothing here is a duplicate satellite call for indices already
     available elsewhere in this app.
     """
+    # Explicitly acknowledge browser CORS preflight.  Without a 2xx OPTIONS
+    # response, the frontend browser blocks the POST before it reaches Flask.
+    if request.method == "OPTIONS":
+        return ("", 204)
+
     body = request.get_json(silent=True) or {}
     lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
     custom_weights = body.get("weights")  # optional override

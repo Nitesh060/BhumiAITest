@@ -110,6 +110,12 @@ except Exception:
 
 @app.before_request
 def _ensure_ee_init():
+    # Browser CORS preflight requests must be answered before any optional
+    # Earth Engine initialization.  Running EE init on OPTIONS can turn a
+    # valid preflight into a 500 when credentials are unavailable.
+    if request.method == "OPTIONS":
+        return None
+
     try:
         initialise_earth_engine()
     except Exception as exc:

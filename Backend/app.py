@@ -14,7 +14,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, Response
-from flask_cors import CORS, cross_origin
+from flask_cors import CORS
 
 from earth_engine_service import fetch_farm_data, initialise_earth_engine
 from scoring import calculate_score
@@ -110,12 +110,6 @@ except Exception:
 
 @app.before_request
 def _ensure_ee_init():
-    # Browser CORS preflight requests must be answered before any optional
-    # Earth Engine initialization.  Running EE init on OPTIONS can turn a
-    # valid preflight into a 500 when credentials are unavailable.
-    if request.method == "OPTIONS":
-        return None
-
     try:
         initialise_earth_engine()
     except Exception as exc:
@@ -136,19 +130,79 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
     channels always return identical numbers for the same coordinates.
     Raises on hard failures (satellite fetch / scoring); callers decide
     how to surface that (HTTP error vs a WhatsApp text reply).
+
+    FarmScore (final_score, 300-900) is now computed from the full
+    20-parameter comprehensive model (Vegetation + Radar + Weather +
+    Temperature) — see scoring.py / comprehensive_score_service.py.
+    Groundwater is fetched here only for crop_recommendation.py (which
+    still uses the original 5-input signature) — it does NOT feed the
+    score anymore, by explicit design choice.
     """
     t0 = time.time()
     logger.info("compute_farmscore lat=%.5f lng=%.5f", lat, lng)
 
     satellite_data = fetch_farm_data(lat=lat, lng=lng, polygon=polygon)
 
-    result = calculate_score(
-        ndvi=satellite_data.get("ndvi"),
-        ndmi=satellite_data.get("ndmi"),
-        rainfall=satellite_data.get("rainfall"),
-        temperature=satellite_data.get("temperature"),
-        groundwater=satellite_data.get("groundwater"),
-    )
+    # ---- Gather the other 15 comprehensive-score parameters in
+    # parallel (NDVI/NDMI/rainfall/temperature already came from
+    # satellite_data above) — same pattern as /comprehensive-score. ----
+    from concurrent.futures import ThreadPoolExecutor as _TPE_SCORE
+
+    def _safe_score_fetch(name, fn, *args):
+        try:
+            return name, fn(*args)
+        except Exception:
+            logger.exception("compute_farmscore sub-fetch '%s' failed (non-fatal)", name)
+            return name, None
+
+    with _TPE_SCORE(max_workers=6) as score_pool:
+        score_futures = [
+            score_pool.submit(_safe_score_fetch, "extended_indices", fetch_extended_indices, lat, lng, polygon),
+            score_pool.submit(_safe_score_fetch, "spectral", calculate_spectral_intelligence, lat, lng, polygon),
+            score_pool.submit(_safe_score_fetch, "sar", _fetch_sar_for_flood, lat, lng, polygon),
+            score_pool.submit(_safe_score_fetch, "solar", fetch_solar_radiation, lat, lng, polygon),
+            score_pool.submit(_safe_score_fetch, "spi", fetch_spi, lat, lng, polygon),
+            score_pool.submit(_safe_score_fetch, "gdd", fetch_gdd, lat, lng, polygon),
+            score_pool.submit(_safe_score_fetch, "spei", fetch_spei_proxy, lat, lng, polygon),
+        ]
+        score_results = {name: val for name, val in (f.result() for f in score_futures)}
+
+    extended = score_results.get("extended_indices") or {}
+    spectral_for_score = score_results.get("spectral") or {}
+    sar = score_results.get("sar") or {}
+    solar = score_results.get("solar") or {}
+    spi = score_results.get("spi") or {}
+    gdd = score_results.get("gdd") or {}
+    spei = score_results.get("spei") or {}
+
+    ndre_val = None
+    if spectral_for_score.get("indices", {}).get("nitrogen"):
+        ndre_val = spectral_for_score["indices"]["nitrogen"].get("raw_value")
+
+    comprehensive_raw_values = {
+        "ndvi": satellite_data.get("ndvi"),
+        "evi": extended.get("evi"),
+        "savi": extended.get("savi"),
+        "msavi": extended.get("msavi"),
+        "ndre": ndre_val,
+        "ndmi": satellite_data.get("ndmi"),
+        "ndwi": extended.get("ndwi"),
+        "ci_green": extended.get("ci_green"),
+        "ci_rededge": extended.get("ci_rededge"),
+        "vv": sar.get("vv_db") if sar.get("available") else None,
+        "vh": sar.get("vh_db") if sar.get("available") else None,
+        "vh_vv": sar.get("vh_vv_ratio") if sar.get("available") else None,
+        "rvi": sar.get("rvi") if sar.get("available") else None,
+        "rainfall": satellite_data.get("rainfall"),
+        "air_temp": satellite_data.get("temperature"),
+        "solar_radiation": solar.get("avg_daily_solar_radiation_mj_m2") if solar.get("available") else None,
+        "spi": spi.get("spi") if spi.get("available") else None,
+        "spei": spei.get("spei_proxy") if spei.get("available") else None,
+        "gdd": gdd.get("gdd") if gdd.get("available") else None,
+        "lst": satellite_data.get("temperature"),
+    }
+
+    result = calculate_score(comprehensive_raw_values)
     crop_result = recommend_crop(
         satellite_data.get("ndvi"),
         satellite_data.get("ndmi"),
@@ -1379,8 +1433,7 @@ def advance_loan_route(loan_id):
         session.close()
 
 
-@app.route("/comprehensive-score", methods=["POST", "OPTIONS"])
-@cross_origin(origins="*", methods=["POST", "OPTIONS"], allow_headers=["Content-Type", "Authorization"])
+@app.route("/comprehensive-score", methods=["POST"])
 def comprehensive_score_route():
     """Computes the 20-parameter weighted-average score (Vegetation +
     Radar + Weather + Temperature). Fetches every parameter in
@@ -1388,11 +1441,6 @@ def comprehensive_score_route():
     nothing here is a duplicate satellite call for indices already
     available elsewhere in this app.
     """
-    # Explicitly acknowledge browser CORS preflight.  Without a 2xx OPTIONS
-    # response, the frontend browser blocks the POST before it reaches Flask.
-    if request.method == "OPTIONS":
-        return ("", 204)
-
     body = request.get_json(silent=True) or {}
     lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
     custom_weights = body.get("weights")  # optional override

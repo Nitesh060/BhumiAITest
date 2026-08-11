@@ -154,11 +154,6 @@ function formatCoords(lat, lng) {
 function selectLocation(lat, lng) {
     document.getElementById("lat-input").value = lat.toFixed(6);
     document.getElementById("lng-input").value = lng.toFixed(6);
-
-    const visibleLat = document.getElementById("visible-lat");
-    const visibleLng = document.getElementById("visible-lng");
-    if (visibleLat) visibleLat.textContent = lat.toFixed(4) + "°";
-    if (visibleLng) visibleLng.textContent = lng.toFixed(4) + "°";
     placeMarker(lat, lng);
 
     const coordsEl = document.getElementById("selected-location-coords");
@@ -654,25 +649,36 @@ function renderTrendChart(trend) {
    Render Result
    =================================================================== */
 
-const PARAM_ORDER = ["groundwater", "ndvi", "ndmi", "rainfall", "temperature"];
+const PARAM_ORDER = [
+    "ndvi", "evi", "savi", "msavi", "ndre", "ndmi", "ndwi", "ci_green", "ci_rededge",
+    "vv", "vh", "vh_vv", "rvi",
+    "rainfall", "air_temp", "solar_radiation", "spi", "spei", "gdd", "lst",
+];
 
 const PARAM_LABELS = {
-    groundwater: "Groundwater",
-    ndvi: "Vegetation (NDVI)",
-    ndmi: "Moisture (NDMI)",
-    rainfall: "Rainfall",
-    temperature: "Temperature",
+    ndvi: "NDVI (Vegetation)", evi: "EVI", savi: "SAVI", msavi: "MSAVI",
+    ndre: "NDRE (Nitrogen)", ndmi: "NDMI (Moisture)", ndwi: "NDWI (Water)",
+    ci_green: "Chlorophyll (Green)", ci_rededge: "Chlorophyll (Red Edge)",
+    vv: "Radar VV", vh: "Radar VH", vh_vv: "Radar VH/VV", rvi: "Radar Veg. Index",
+    rainfall: "Rainfall", air_temp: "Air Temperature", solar_radiation: "Solar Radiation",
+    spi: "SPI (Rainfall Anomaly)", spei: "SPEI (Water Balance)", gdd: "Growing Degree Days",
+    lst: "Land Surface Temp.",
 };
 
 const PARAM_ICONS = {
-    groundwater: "💧",
-    ndvi: "🌿",
-    ndmi: "🌱",
-    rainfall: "🌧️",
-    temperature: "🌡️",
+    ndvi: "🌿", evi: "🌳", savi: "🌾", msavi: "🌾", ndre: "🍃", ndmi: "🌱", ndwi: "💧",
+    ci_green: "🟢", ci_rededge: "🔴",
+    vv: "📡", vh: "📡", vh_vv: "📡", rvi: "📡",
+    rainfall: "🌧️", air_temp: "🌡️", solar_radiation: "☀️",
+    spi: "🌧️", spei: "🌍", gdd: "🌱", lst: "🌡️",
 };
 
-const PARAM_COLORS = ["#38bdf8", "#34d399", "#a3e635", "#60a5fa", "#f59e0b"];
+const PARAM_COLORS = [
+    "#34d399", "#22c55e", "#84cc16", "#a3e635", "#65a30d", "#4ade80", "#38bdf8",
+    "#16a34a", "#15803d",
+    "#a78bfa", "#8b5cf6", "#7c3aed", "#6d28d9",
+    "#60a5fa", "#f59e0b", "#fbbf24", "#0ea5e9", "#06b6d4", "#84cc16", "#f97316",
+];
 
 function statusLabel(pct) {
     if (pct >= 80) return "Excellent";
@@ -728,11 +734,6 @@ function renderResult(data) {
         if (key === "rainfall" && data.rainfall_monthly && data.rainfall_monthly.length) {
             extraTitle = "Monthly breakdown: " + data.rainfall_monthly
                 .map(m => `${m.month} ${m.mm_per_day != null ? m.mm_per_day.toFixed(1) : "—"} mm/day`)
-                .join(", ");
-        }
-        if (key === "groundwater" && data.groundwater_trend && data.groundwater_trend.length) {
-            extraTitle = "Yearly trend: " + data.groundwater_trend
-                .map(t => `${t.year}: ${t.groundwater != null ? t.groundwater.toFixed(0) : "—"} kg/m²`)
                 .join(", ");
         }
         const hasExtra = extraTitle ? ' <span class="sr-info" title="' + extraTitle.replace(/"/g, "&quot;") + '">ⓘ</span>' : "";
@@ -1014,51 +1015,6 @@ function renderResult(data) {
    Compute Score — single entry point called on button click
    =================================================================== */
 
-async function calculateComprehensiveScore(lat, lng) {
-    const valueEl = document.getElementById("comprehensive-score-value");
-    const gradeEl = document.getElementById("comprehensive-score-grade");
-    const paramsEl = document.getElementById("comprehensive-score-params");
-    const methodEl = document.getElementById("comprehensive-score-method");
-
-    if (!valueEl) {
-        console.warn("Comprehensive Score card is missing from index.html");
-        return null;
-    }
-
-    valueEl.textContent = "Computing…";
-    gradeEl.textContent = "Fetching satellite, radar and weather parameters…";
-    paramsEl.textContent = "Please wait (~20–40 seconds)";
-    methodEl.textContent = "";
-
-    try {
-        const response = await fetch(`${API_BASE_URL}/comprehensive-score`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ lat, lng, polygon: farmPolygon || null }),
-        });
-
-        const data = await response.json();
-
-        if (!response.ok || data.score_0_100 == null) {
-            throw new Error(data.error || data.reason || `Comprehensive Score API error (${response.status})`);
-        }
-
-        valueEl.textContent = `${Number(data.score_0_100).toFixed(1)} / 100`;
-        gradeEl.textContent = `${data.grade || "—"} · ${data.score_300_900 ?? "—"}/900 FarmScore equivalent`;
-        paramsEl.textContent = `${data.parameters_used ?? "—"} of ${data.parameters_total ?? "—"} parameters available`;
-        methodEl.textContent = data.method || "";
-
-        return data;
-    } catch (err) {
-        console.error("Comprehensive Score error:", err);
-        valueEl.textContent = "N/A";
-        gradeEl.textContent = "Comprehensive Score could not be calculated";
-        paramsEl.textContent = err.message || "Please try again.";
-        methodEl.textContent = "";
-        return null;
-    }
-}
-
 async function computeScore() {
     const lat = parseFloat(document.getElementById("lat-input").value);
     const lng = parseFloat(document.getElementById("lng-input").value);
@@ -1084,11 +1040,6 @@ async function computeScore() {
         btnText.textContent = "Querying Earth Engine…";
         const result = await calculateFarmScore(lat, lng);
         renderResult(result);
-
-        // Automatically calculate the 20-parameter Comprehensive Score
-        // after the main FarmScore is available.
-        btnText.textContent = "Calculating Comprehensive Score…";
-        await calculateComprehensiveScore(lat, lng);
     } catch (err) {
         errBox.textContent = err.message || "An unexpected error occurred.";
         errBox.style.display = "block";

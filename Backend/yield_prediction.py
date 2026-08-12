@@ -40,25 +40,26 @@ logger = logging.getLogger(__name__)
 
 # NDVI thresholds match crop_recommendation.py's own "healthy" cutoffs,
 # so a farm just clearing that bar is treated as ~average yield for
-# that crop — not an independently chosen number.
+# that crop — not an independently chosen number. reference_evi/
+# reference_ndre match the same file's EVI/NDRE bonus thresholds.
 CROP_YIELD_REFERENCE = {
     "Rice": {
-        "reference_ndvi": 0.60,
+        "reference_ndvi": 0.60, "reference_evi": 0.40, "reference_ndre": 0.25,
         "avg_yield_kg_ha": 2650,
         "source": "India national average paddy yield (indicative, MoA&FW-published range)",
     },
     "Wheat": {
-        "reference_ndvi": 0.45,
+        "reference_ndvi": 0.45, "reference_evi": 0.30, "reference_ndre": 0.20,
         "avg_yield_kg_ha": 3400,
         "source": "India national average wheat yield (indicative, MoA&FW-published range)",
     },
     "Maize": {
-        "reference_ndvi": 0.50,
+        "reference_ndvi": 0.50, "reference_evi": 0.35, "reference_ndre": 0.22,
         "avg_yield_kg_ha": 3000,
         "source": "India national average maize yield (indicative, MoA&FW-published range)",
     },
     "Groundnut": {
-        "reference_ndvi": 0.40,
+        "reference_ndvi": 0.40, "reference_evi": 0.28, "reference_ndre": 0.18,
         "avg_yield_kg_ha": 1300,
         "source": "India national average groundnut yield (indicative, MoA&FW-published range)",
     },
@@ -68,16 +69,30 @@ MIN_RATIO = 0.3   # floor: even a stressed field rarely yields <30% of average
 MAX_RATIO = 1.3   # ceiling: a single NDVI reading shouldn't imply >130% of average
 
 
-def estimate_yield(crop: str, ndvi: Optional[float], area_ha: Optional[float] = None) -> Optional[Dict[str, Any]]:
+def estimate_yield(crop: str, ndvi: Optional[float], area_ha: Optional[float] = None,
+                    evi: Optional[float] = None, ndre: Optional[float] = None) -> Optional[Dict[str, Any]]:
     """Returns a yield estimate dict for `crop`, or None if the crop
-    isn't in the reference table or NDVI is missing.
+    isn't in the reference table or NDVI is missing. evi/ndre are
+    optional — when given (already fetched by compute_farmscore's
+    comprehensive model, no extra satellite call), they're blended
+    with NDVI into a more robust health ratio than NDVI alone, which
+    is known to saturate in dense canopy.
     """
     ref = CROP_YIELD_REFERENCE.get(crop)
     if not ref or ndvi is None:
         return None
 
-    ratio = ndvi / ref["reference_ndvi"]
-    ratio_clipped = max(MIN_RATIO, min(ratio, MAX_RATIO))
+    ratios = [ndvi / ref["reference_ndvi"]]
+    indices_used = ["ndvi"]
+    if evi is not None and ref.get("reference_evi"):
+        ratios.append(evi / ref["reference_evi"])
+        indices_used.append("evi")
+    if ndre is not None and ref.get("reference_ndre"):
+        ratios.append(ndre / ref["reference_ndre"])
+        indices_used.append("ndre")
+
+    blended_ratio = sum(ratios) / len(ratios)
+    ratio_clipped = max(MIN_RATIO, min(blended_ratio, MAX_RATIO))
     yield_kg_ha = round(ref["avg_yield_kg_ha"] * ratio_clipped)
 
     result: Dict[str, Any] = {
@@ -86,8 +101,9 @@ def estimate_yield(crop: str, ndvi: Optional[float], area_ha: Optional[float] = 
         "reference_avg_yield_kg_per_ha": ref["avg_yield_kg_ha"],
         "ndvi_used": round(ndvi, 4),
         "reference_ndvi": ref["reference_ndvi"],
-        "ratio_clipped": ratio != ratio_clipped,
-        "method": "NDVI-proportional scaling against national average yield — a formula-based proxy, not a trained ML model.",
+        "indices_blended": indices_used,
+        "ratio_clipped": blended_ratio != ratio_clipped,
+        "method": f"Blended-index scaling ({'+'.join(indices_used).upper()}) against national average yield — a formula-based proxy, not a trained ML model.",
         "source": ref["source"],
     }
 

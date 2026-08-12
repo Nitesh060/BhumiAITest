@@ -209,6 +209,8 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
         satellite_data.get("rainfall"),
         satellite_data.get("temperature"),
         satellite_data.get("groundwater"),
+        evi=comprehensive_raw_values.get("evi"),
+        ndre=comprehensive_raw_values.get("ndre"),
     )
 
     elapsed = round(time.time() - t0, 2)
@@ -217,7 +219,7 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
     # ---- Climate risk assessment — rule-based on the REAL rainfall/temperature
     # values just fetched, not a model prediction. Thresholds are simple and
     # transparent so the "why" is always visible. ----
-    def _assess_climate_risk(rainfall_mm_day, temp_c):
+    def _assess_climate_risk(rainfall_mm_day, temp_c, spi_val=None, gdd_val=None, spei_val=None):
         flags = []
         if rainfall_mm_day is not None:
             if rainfall_mm_day < 2:
@@ -230,9 +232,35 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
             elif temp_c < 15:
                 flags.append("Low temperature for most kharif crops")
 
+        # SPI (drought/excess-rain anomaly vs historical years) — a
+        # signal rainfall_mm_day alone can't give, since that's just
+        # the current growing-season average with no historical context.
+        if spi_val is not None:
+            if spi_val <= -1.5:
+                flags.append(f"SPI {spi_val} — severe drought vs historical years")
+            elif spi_val <= -1:
+                flags.append(f"SPI {spi_val} — moderate drought vs historical years")
+            elif spi_val >= 1.5:
+                flags.append(f"SPI {spi_val} — unusually wet vs historical years")
+
+        # SPEI (Thornthwaite water-balance proxy) — catches heat-driven
+        # moisture stress that rainfall alone misses (high temp can
+        # deplete effective moisture even with normal rainfall).
+        if spei_val is not None and spei_val <= -1.5:
+            flags.append(f"SPEI {spei_val} — water-balance deficit (evapotranspiration proxy)")
+
+        # GDD — very low accumulated heat units can indicate a stalled
+        # growing season; very high can indicate accelerated/stressed
+        # crop cycling. Thresholds are indicative, not crop-calibrated.
+        if gdd_val is not None:
+            if gdd_val < 400:
+                flags.append(f"GDD {gdd_val} — low heat accumulation, growth may be behind schedule")
+            elif gdd_val > 2200:
+                flags.append(f"GDD {gdd_val} — very high heat accumulation, possible heat stress")
+
         if not flags:
             level = "Low"
-        elif len(flags) == 1:
+        elif len(flags) <= 2:
             level = "Moderate"
         else:
             level = "High"
@@ -240,7 +268,10 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
         return {"level": level, "flags": flags}
 
     climate_risk = _assess_climate_risk(
-        satellite_data.get("rainfall"), satellite_data.get("temperature")
+        satellite_data.get("rainfall"), satellite_data.get("temperature"),
+        spi_val=comprehensive_raw_values.get("spi"),
+        gdd_val=comprehensive_raw_values.get("gdd"),
+        spei_val=comprehensive_raw_values.get("spei"),
     )
 
     # ---- Enrichment modules (SatSource parity) — run concurrently, each
@@ -286,7 +317,10 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
     try:
         top_crop_name = crop_result["primary"]["crop"] if crop_result.get("primary") else None
         area_ha = compute_polygon_area_ha(polygon) if polygon else None
-        yield_prediction = estimate_yield(top_crop_name, satellite_data.get("ndvi"), area_ha)
+        yield_prediction = estimate_yield(
+            top_crop_name, satellite_data.get("ndvi"), area_ha,
+            evi=comprehensive_raw_values.get("evi"), ndre=comprehensive_raw_values.get("ndre"),
+        )
     except Exception:
         logger.exception("Yield prediction failed (non-fatal)")
         yield_prediction = None

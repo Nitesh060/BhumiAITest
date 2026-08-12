@@ -131,26 +131,38 @@ def fetch_cropping_intensity(lat: float, lng: float, polygon: Optional[dict] = N
     many cropping cycles the field goes through — a real, if approximate,
     signal (a proper crop-calendar model would need field-level ground
     truth, which this doesn't claim to have).
+
+    PERFORMANCE NOTE: fetches all 12 months in a single server-side
+    ee.List.map() call + one getInfo(), not 12 sequential round-trips —
+    same fix as fetch_drought_instances/fetch_spi, same reason.
     """
     region = _get_region(lat, lng, polygon)
-    monthly_ndvi: List[Optional[float]] = []
 
-    for m in range(1, 13):
-        start = f"2023-{m:02d}-01"
-        end_month = m + 1 if m < 12 else 1
-        end_year = 2023 if m < 12 else 2024
-        end = f"{end_year}-{end_month:02d}-01"
-        s2 = (
-            ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-            .filterDate(start, end)
-            .filterBounds(region)
-            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
-        )
-        ndvi_img = s2.map(
-            lambda img: img.normalizedDifference(["B8", "B4"]).rename("NDVI")
-        ).select("NDVI").mean()
-        val = _reduce_mean(ndvi_img, region, scale=20)
-        monthly_ndvi.append(round(val, 4) if val is not None else None)
+    months_list = ee.List.sequence(1, 12)
+    s2_all = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").filterBounds(region)
+
+    def _month_ndvi(m):
+        m = ee.Number(m)
+        start = ee.Date.fromYMD(2023, m, 1)
+        end = start.advance(1, "month")
+        s2 = s2_all.filterDate(start, end).filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
+        ndvi_img = s2.map(lambda img: img.normalizedDifference(["B8", "B4"]).rename("NDVI")).select("NDVI").mean()
+        val = ndvi_img.reduceRegion(
+            reducer=ee.Reducer.mean(), geometry=region, scale=20, maxPixels=1e9,
+        ).get("NDVI")
+        return ee.Feature(None, {"month": m, "ndvi": val})
+
+    try:
+        fc = ee.FeatureCollection(months_list.map(_month_ndvi))
+        raw = fc.getInfo()
+        features_sorted = sorted(raw.get("features", []), key=lambda f: f["properties"]["month"])
+        monthly_ndvi: List[Optional[float]] = [
+            round(f["properties"]["ndvi"], 4) if f["properties"].get("ndvi") is not None else None
+            for f in features_sorted
+        ]
+    except Exception:
+        logger.exception("Batched cropping-intensity fetch failed")
+        monthly_ndvi = [None] * 12
 
     # Count peaks: a local max that rises >0.1 above its neighbouring troughs
     clean = [v for v in monthly_ndvi if v is not None]
@@ -443,20 +455,39 @@ def fetch_drought_instances(lat: float, lng: float, start_year: int = 2000, buff
     administrative-boundary dataset loaded — a real district polygon
     (from a shapefile/FeatureCollection) would be more precise if you
     add one later.
+
+    PERFORMANCE NOTE: computes all years in a single server-side
+    ee.List.map() call and one getInfo() round-trip, instead of one
+    round-trip per year — 25+ years used to mean 25+ sequential network
+    calls (the single biggest cause of slow /calculate responses).
     """
     region = _buffered_region(lat, lng, buffer_m)
     end_year = datetime.utcnow().year
 
-    yearly_rainfall = []
-    for year in range(start_year, end_year):
-        coll = (
-            ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
-            .filterDate(f"{year}-01-01", f"{year}-12-31")
-            .filterBounds(region)
-        )
-        total = coll.sum()
-        val = _reduce_mean(total, region, scale=5000)
-        yearly_rainfall.append({"year": year, "rainfall_mm": val})
+    years_list = ee.List.sequence(start_year, end_year - 1)
+    chirps = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
+
+    def _year_total(y):
+        y = ee.Number(y)
+        start = ee.Date.fromYMD(y, 1, 1)
+        end = start.advance(1, "year")
+        total_img = chirps.filterDate(start, end).filterBounds(region).sum()
+        val = total_img.reduceRegion(
+            reducer=ee.Reducer.mean(), geometry=region, scale=5000, maxPixels=1e9,
+        ).get("precipitation")
+        return ee.Feature(None, {"year": y, "rainfall_mm": val})
+
+    try:
+        fc = ee.FeatureCollection(years_list.map(_year_total))
+        raw = fc.getInfo()  # single round-trip for every year
+    except Exception:
+        logger.exception("Batched drought-years fetch failed")
+        return {"drought_years": [], "note": "Rainfall history fetch failed.", "source": "CHIRPS"}
+
+    yearly_rainfall = [
+        {"year": int(f["properties"]["year"]), "rainfall_mm": f["properties"].get("rainfall_mm")}
+        for f in raw.get("features", [])
+    ]
 
     valid = [y["rainfall_mm"] for y in yearly_rainfall if y["rainfall_mm"] is not None]
     if not valid:

@@ -168,20 +168,30 @@ def _cover_section(data: Dict[str, Any], ss, tmpdir: str) -> list:
     gauge_img = Image(gauge_path, width=75 * mm, height=47 * mm)
 
     components = data.get("components", {})
+    param_style = ParagraphStyle("ParamCell", parent=ss["Small"], fontSize=7, textColor=colors.black, leading=8.5)
+    source_style = ParagraphStyle("SourceCell", parent=ss["Small"], fontSize=6.5, textColor=GREY, leading=8)
+
     rows = [["Parameter", "Raw Value", "Sub-score", "Weight", "Source"]]
     for key, c in components.items():
+        label = c.get("label") or key.replace("_", " ").upper()
         rows.append([
-            key.upper(), f"{c.get('raw_value')}{c.get('unit','')}",
-            f"{c.get('sub_score')}/100", f"{c.get('weight')}%", c.get("source", "—"),
+            Paragraph(label, param_style),
+            f"{c.get('raw_value')}{c.get('unit','')}",
+            f"{c.get('sub_score')}/100" if c.get("sub_score") is not None else "N/A",
+            f"{c.get('weight')}%",
+            Paragraph(c.get("source", "—"), source_style),
         ])
-    factor_table = Table(rows, colWidths=[22*mm, 26*mm, 22*mm, 16*mm, 28*mm])
+    factor_table = Table(rows, colWidths=[42*mm, 24*mm, 20*mm, 16*mm, 34*mm], repeatRows=1)
     factor_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), BRAND_BLUE),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+        ("FONTSIZE", (0, 0), (-1, 0), 7.5),
+        ("FONTSIZE", (1, 1), (3, -1), 7.5),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT_GREY]),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
 
     score_label = Paragraph(

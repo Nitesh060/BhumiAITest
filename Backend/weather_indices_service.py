@@ -63,22 +63,40 @@ def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None,
     season's rainfall against the same window's rainfall in the
     previous `history_years` years. SPI ~0 = normal, negative = drier
     than usual (drought signal), positive = wetter than usual.
+
+    PERFORMANCE NOTE: fetches every year in ONE server-side
+    ee.List.map() call + one getInfo(), not one round-trip per year —
+    this used to be the second-biggest cause of slow /calculate calls
+    alongside fetch_drought_instances (same fix, same reason).
     """
     if current_year is None:
         current_year = datetime.utcnow().year
 
     region = _get_region(lat, lng, polygon)
-    yearly_totals: List[float] = []
+    start_year = current_year - history_years
+    years_list = ee.List.sequence(start_year, current_year)
+    chirps = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
 
-    for year in range(current_year - history_years, current_year + 1):
-        coll = (
-            ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
-            .filterDate(f"{year}-06-01", f"{year}-10-31")
-            .filterBounds(region)
-        )
-        val = _reduce_mean(coll.sum(), region, scale=5000)
-        if val is not None:
-            yearly_totals.append(val)
+    def _season_total(y):
+        y = ee.Number(y)
+        start = ee.Date.fromYMD(y, 6, 1)
+        end = ee.Date.fromYMD(y, 10, 31)
+        total_img = chirps.filterDate(start, end).filterBounds(region).sum()
+        val = total_img.reduceRegion(
+            reducer=ee.Reducer.mean(), geometry=region, scale=5000, maxPixels=1e9,
+        ).get("precipitation")
+        return ee.Feature(None, {"year": y, "rainfall_mm": val})
+
+    try:
+        fc = ee.FeatureCollection(years_list.map(_season_total))
+        raw = fc.getInfo()  # single round-trip for every year
+    except Exception:
+        logger.exception("Batched SPI fetch failed")
+        return {"available": False, "reason": "Rainfall history fetch failed."}
+
+    features_sorted = sorted(raw.get("features", []), key=lambda f: f["properties"]["year"])
+    yearly = [f["properties"].get("rainfall_mm") for f in features_sorted]
+    yearly_totals = [v for v in yearly if v is not None]
 
     if len(yearly_totals) < 4:
         return {"available": False, "reason": "Insufficient rainfall history to compute a meaningful SPI (need several years)."}

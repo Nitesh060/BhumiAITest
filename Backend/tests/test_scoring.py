@@ -8,11 +8,9 @@ def test_missing_parameter_weights_are_redistributed():
     assert abs(sum(c["effective_weight_pct"] for c in result["components"].values()) - 100) < 0.01
 
 
-def test_temperature_is_not_double_counted_in_score_service():
+def test_air_temperature_is_zero_weighted_when_source_is_lst():
     result = compute_comprehensive_score({"air_temp": 30.0, "lst": 30.0})
-    # Both are accepted by the generic service, but the application-level
-    # raw input should supply only LST because its source is MODIS LST.
-    assert result["components"]["air_temp"]["weight_pct"] == 5.0
+    assert result["components"]["air_temp"]["weight_pct"] == 0.0
     assert result["components"]["lst"]["weight_pct"] == 10.0
 
 

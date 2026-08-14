@@ -1,7 +1,7 @@
 /* ===================================================================
    shell.js — included on every protected page BEFORE the page's own
    script. Handles theme, auth, shared UI polish, API configuration,
-   and user controls.
+   dashboard composition, and user controls.
    =================================================================== */
 
 (function applyTheme() {
@@ -9,19 +9,24 @@
     if (saved === "light") document.documentElement.setAttribute("data-theme", "light");
 })();
 
-// Shared API configuration — loaded before page-specific JavaScript.
 window.FARMSCORE_API_URL = window.FARMSCORE_API_URL || "https://bhumiaitest.onrender.com";
 const BHUMI_API_BASE_URL = window.FARMSCORE_API_URL;
 
-// Shared typography/layout layer. Loading it here keeps all protected pages
-// visually consistent without requiring every HTML page to duplicate the link.
 (function loadUiPolish() {
     if (document.querySelector('link[data-bhumi-ui-polish]')) return;
     const link = document.createElement("link");
     link.rel = "stylesheet";
-    link.href = "ui-polish.css?v=2";
+    link.href = "ui-polish.css?v=3";
     link.dataset.bhumiUiPolish = "true";
     document.head.appendChild(link);
+})();
+
+(function loadDashboardUi() {
+    if (!window.location.pathname.endsWith("index.html") && window.location.pathname !== "/") return;
+    const script = document.createElement("script");
+    script.src = "dashboard-ui.js?v=1";
+    script.defer = true;
+    document.head.appendChild(script);
 })();
 
 function bhumiGetToken() {
@@ -69,7 +74,6 @@ function bhumiAuthFetch(url, options = {}) {
         const info = document.createElement("div");
         info.className = "shell-user-info";
         if (user) {
-            // Use text nodes rather than innerHTML for account-derived data.
             const strong = document.createElement("strong");
             strong.textContent = user.name || "User";
             info.appendChild(strong);

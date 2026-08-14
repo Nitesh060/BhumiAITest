@@ -1,14 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bhumi AI — Agricultural Suitability Dashboard</title>
-
+    <title>BHUMI — AI Agricultural Intelligence</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
@@ -16,402 +13,78 @@
     <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
-
     <link rel="stylesheet" href="style.css" />
 </head>
-
 <body>
-
 <div class="app-shell">
-
-    <!-- =============================== Sidebar =============================== -->
     <aside class="side-nav">
-
-        <div class="nav-logo">
-            <div class="logo-mark">🌱</div>
-            <div>
-                <h1>Bhumi AI</h1>
-                <p>Smart Land. Strong Future.</p>
-            </div>
-        </div>
-
+        <div class="nav-logo"><div class="logo-mark">🌱</div><div><h1>BHUMI</h1><p>AI for Bharat, Bharat for AI</p></div></div>
         <nav class="nav-links">
-            <a class="nav-link active" href="index.html"><span>🏠</span> Dashboard</a>
-            <a class="nav-link" id="nav-diagnose-btn"><span>📋</span> Farm Evaluation</a>
-            <a class="nav-link" href="report.html"><span>📄</span> Extended Report</a>
-            <a class="nav-link" href="glossary.html"><span>📚</span> Glossary</a>
-            <a class="nav-link" href="farm-management.html"><span>🧑‍🌾</span> Farm Management</a>
-            <a class="nav-link" href="satellite-intelligence.html"><span>🛰️</span> Satellite Intelligence</a>
-            <a class="nav-link" href="crop-intelligence.html"><span>🌾</span> Crop Intelligence</a>
-            <a class="nav-link" href="insurance-claim.html"><span>🛡️</span> Insurance Claims</a>
-            <a class="nav-link" href="dashboard-overview.html"><span>📊</span> Portfolio &amp; Admin</a>
+            <a class="nav-link active" href="index.html"><span>⌂</span> Dashboard</a>
+            <a class="nav-link" id="nav-diagnose-btn"><span>▣</span> Farm Evaluation</a>
+            <a class="nav-link" href="report.html"><span>▤</span> Extended Report</a>
+            <a class="nav-link" href="glossary.html"><span>▥</span> Glossary</a>
+            <a class="nav-link" href="farm-management.html"><span>♟</span> Farm Management</a>
+            <a class="nav-link" href="satellite-intelligence.html"><span>◉</span> Satellite Intelligence</a>
+            <a class="nav-link" href="crop-intelligence.html"><span>❧</span> Crop Intelligence</a>
+            <a class="nav-link" href="insurance-claim.html"><span>◇</span> Insurance Claims</a>
+            <a class="nav-link" href="dashboard-overview.html"><span>▦</span> Portfolio &amp; Admin</a>
         </nav>
-
-        <div class="nav-footer-card">
-            <div class="nfc-title">Satellite-Powered Land Intelligence</div>
-            <p>Real Earth observation data for better farming and financing decisions.</p>
-        </div>
-
+        <div class="nav-footer-card"><div class="nfc-title">AI + Satellite</div><p>Real Earth observation data for smarter agriculture and financing decisions.</p></div>
     </aside>
 
-    <!-- =============================== Main =============================== -->
-    <div class="main-col">
-
-        <!-- Top bar -->
+    <main class="main-col">
         <header class="top-bar">
-
-            <div class="search-wrap">
-                <span class="search-icon">🔍</span>
-                <input type="text" id="location-search" placeholder="Search location, village or city…">
-                <button id="search-btn" class="icon-btn" title="Search">Go</button>
-            </div>
-
-            <button class="btn-detect" id="location-btn">
-                <span class="btn-icon">📍</span> Detect My Location
-            </button>
-
+            <div class="search-wrap"><span class="search-icon">⌕</span><input type="text" id="location-search" placeholder="Search village, district, state…"><button id="search-btn" class="icon-btn" title="Search">Go</button></div>
+            <button class="btn-detect" id="location-btn"><span class="btn-icon">⌖</span> Detect Location</button>
             <span class="topbar-spacer"></span>
-
-            <span class="bell-icon" title="Notifications">🔔</span>
-
+            <div class="header-weather" id="weather-card"><div class="weather-symbol" id="weather-icon">☀️</div><div><strong id="weather-temp">—°C</strong><span id="weather-desc">Select a location</span></div></div>
+            <div class="header-satellite" id="sat-status-card"><span>Satellite: Active</span><small id="sat-status-scenes">Sentinel-2</small><small id="sat-status-cloud" style="display:none">—</small><small id="sat-status-freshness" style="display:none">—</small></div>
+            <div class="header-user"><div class="header-avatar">●</div><div><strong>Nitesh Kumar</strong><span>Analyst</span></div><span>⌄</span></div>
+            <span id="weather-wind" style="display:none"></span>
         </header>
-
         <div class="error-box" id="error-box"></div>
 
-        <!-- Info strip -->
-        <div class="info-strip">
-
-            <div class="info-card" id="sat-status-card">
-                <div class="info-card-title">🛰️ Satellite Status</div>
-                <div class="info-card-main">Sentinel-2</div>
-                <div class="info-card-line" id="sat-status-scenes">Select a location</div>
-                <div class="info-card-line" id="sat-status-cloud">—</div>
-                <div class="info-card-line muted" id="sat-status-freshness">—</div>
+        <section class="hero-intro">
+            <div class="hero-copy"><div class="hero-kicker">Agricultural intelligence platform</div><h2 class="hero-title">Know Your Land.<br><span>Grow Your Future.</span></h2><p class="hero-subtitle">AI-Powered Agricultural Suitability<br>and Credit Intelligence Platform</p></div>
+            <div class="feature-strip">
+                <div class="feature-chip"><div class="fc-icon">✦</div><div><strong>AI-Powered</strong><span>Analysis</span></div></div>
+                <div class="feature-chip"><div class="fc-icon">⌁</div><div><strong>Accurate</strong><span>Insights</span></div></div>
+                <div class="feature-chip"><div class="fc-icon">▱</div><div><strong>Credit</strong><span>Intelligence</span></div></div>
+                <div class="feature-chip"><div class="fc-icon">◎</div><div><strong>Better</strong><span>Decisions</span></div></div>
             </div>
-
-            <div class="info-card score-info-card">
-                <div class="info-card-title">🌾 Farm Score</div>
-                <div class="mini-score-row">
-                    <div class="mini-score-ring">
-                        <svg viewBox="0 0 130 130">
-                            <circle cx="65" cy="65" r="54" fill="none" stroke="#22303c" stroke-width="14"/>
-                            <circle
-                                cx="65" cy="65" r="54" fill="none"
-                                stroke="#34d399" stroke-width="14"
-                                stroke-linecap="round"
-                                stroke-dasharray="339.3"
-                                stroke-dashoffset="339.3"
-                                id="ring-arc"
-                                transform="rotate(-90 65 65)"/>
-                        </svg>
-                        <div class="mini-score-center">
-                            <span id="final-score">—</span>
-                        </div>
-                    </div>
-                    <div>
-                        <div class="score-grade" id="score-grade">—</div>
-                        <div class="coord-display" id="coord-display">/900</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="info-card" id="selected-location-card">
-                <div class="info-card-title">📍 Location</div>
-                <div class="info-card-main" id="selected-location-coords">Not selected</div>
-                <div class="info-card-line" id="selected-location-place">Click the map or search above</div>
-            </div>
-
-            <div class="info-card weather-info-card" id="weather-card">
-                <div class="info-card-title">🌦 Weather Today</div>
-                <div class="weather-current">
-                    <div class="weather-icon" id="weather-icon">—</div>
-                    <div>
-                        <div class="weather-current-temp" id="weather-temp">—°C</div>
-                        <div class="weather-current-desc" id="weather-desc">—</div>
-                    </div>
-                    <div class="weather-wind" id="weather-wind"></div>
-                </div>
-            </div>
-
-        </div>
-
-        <!-- Comprehensive Score Summary -->
-        <section id="comprehensive-score-card" class="info-card">
-            <div class="comprehensive-score-inner">
-                <div>
-                    <div class="info-card-title">🎯 Comprehensive Score</div>
-                    <div id="comprehensive-score-value">— / 100</div>
-                    <div id="comprehensive-score-grade">Calculate a location to generate the score</div>
-                    <div id="comprehensive-score-params">20-parameter satellite, radar and weather assessment</div>
-                </div>
-                <a href="comprehensive-score.html" id="comprehensive-score-link">View Full Analysis →</a>
-            </div>
-            <div id="comprehensive-score-method"></div>
         </section>
 
-        <!-- Main dashboard row: map+breakdown (left) / nearby+loan (right) -->
         <div class="dashboard-grid">
+            <section class="map-column">
+                <div class="map-tabs"><button class="map-tab active" data-tab="view">Map View</button><button class="map-tab" data-tab="ndvi">NDVI</button><button class="map-tab" data-tab="ndmi">Soil Moisture</button><button class="map-tab" data-tab="rainfall">Rainfall</button><button class="map-tab" data-tab="groundwater">Groundwater</button><button class="map-tab map-tab-spectral" data-tab="spectral" id="spectral-tab-btn">Spectral</button><button class="map-tab" data-tab="layers">More Layers ▾</button></div>
+                <div class="map-panel"><div id="map"></div><div class="ndvi-legend" id="ndvi-legend" style="display:none"><span>NDVI Health</span><div class="legend-gradient"></div><span class="legend-labels"><span>Low</span><span>High</span></span></div></div>
+                <div class="bottom-row"><div class="panel-card farm-score-overview"><div class="farm-score-main"><div class="mini-score-ring large-score-ring"><svg viewBox="0 0 130 130"><circle cx="65" cy="65" r="54" fill="none" stroke="#dce9df" stroke-width="14"/><circle cx="65" cy="65" r="54" fill="none" stroke="#20a348" stroke-width="14" stroke-linecap="round" stroke-dasharray="339.3" stroke-dashoffset="339.3" id="ring-arc" transform="rotate(-90 65 65)"/></svg><div class="mini-score-center"><span id="final-score">—</span></div></div><div><div class="farm-score-label">Farm Suitability Score</div><div class="score-grade" id="score-grade">Calculate a location</div><div class="coord-display" id="coord-display">/100</div></div></div><div class="key-indicators-title">Key Land Indicators</div><div id="params-grid" class="params-grid"><p class="empty-hint">Calculate a Bhumi AI Score to see live land indicators.</p></div></div></div>
+                <div class="data-footer-grid"><div class="data-pill"><div class="dp-icon">◉</div><div><strong>Data Source</strong><span>Sentinel-2 · NASA · IMD · SoilGrids</span></div></div><div class="data-pill"><div class="dp-icon">▣</div><div><strong>Last Updated</strong><span id="data-last-updated">On calculation</span></div></div><div class="data-pill"><div class="dp-icon">◎</div><div><strong>Analysis Accuracy</strong><span>Transparent score model</span></div></div><div class="data-pill"><div class="dp-icon">◆</div><div><strong>Coverage</strong><span>India · All States</span></div></div></div>
+            </section>
 
-            <!-- Map column -->
-            <div class="map-column">
-
-                <div class="map-tabs">
-                    <button class="map-tab active" data-tab="view">Map View</button>
-                    <button class="map-tab" data-tab="ndvi">NDVI</button>
-                    <button class="map-tab" data-tab="ndmi">Soil Moisture</button>
-                    <button class="map-tab" data-tab="rainfall">Rainfall</button>
-                    <button class="map-tab" data-tab="groundwater">Groundwater</button>
-                    <button class="map-tab map-tab-spectral" data-tab="spectral" id="spectral-tab-btn">🔬 Spectral</button>
-                    <button class="map-tab" data-tab="layers">More Layers ▾</button>
-                </div>
-
-                <div class="map-panel">
-
-                    <div id="map"></div>
-
-                    <div class="ndvi-legend" id="ndvi-legend" style="display:none;">
-                        <span>NDVI Health</span>
-                        <div class="legend-gradient"></div>
-                        <span class="legend-labels"><span>Low</span><span>High</span></span>
-                    </div>
-
-                </div>
-
-                <div class="bottom-row">
-
-                    <div class="panel-card">
-                        <div class="panel-title">📊 Score Breakdown</div>
-                        <div id="params-grid" class="params-grid">
-                            <p class="empty-hint">Calculate a Bhumi AI Score to see the breakdown.</p>
-                        </div>
-                    </div>
-
-                    <div class="panel-card">
-                        <div class="panel-title">📈 NDVI Trend <span class="panel-subtitle">2020–2023</span></div>
-                        <div id="trend-chart-wrap" class="trend-chart-wrap">
-                            <p class="trend-empty">Calculate a Bhumi AI Score to see the trend.</p>
-                        </div>
-                    </div>
-
-                    <div class="panel-card">
-                        <div class="panel-title">📋 Land Summary</div>
-                        <div class="summary-row"><span>Farm Score</span><span id="ls-score">—</span></div>
-                        <div class="summary-row"><span>Risk Level</span><span id="ls-risk">—</span></div>
-                        <div class="summary-row"><span>Top Crop</span><span id="ls-crop">—</span></div>
-                        <div class="summary-row"><span>Climate Risk</span><span id="ls-climate">—</span></div>
-                        <div class="summary-row"><span>Surface Water (NDWI)</span><span id="ls-ndwi">—</span></div>
-                        <div class="summary-row"><span>Farm Area</span><span id="ls-area">—</span></div>
-                        <div class="summary-row"><span>Eval. Date</span><span id="ls-date">—</span></div>
-                    </div>
-
-                </div>
-
-            </div>
-
-            <!-- Right column -->
-            <div class="right-column">
-
-                <div class="panel-card nearby-card" id="nearby-resources-card">
-                    <div class="panel-title">
-                        📍 Nearby Resources
-                        <span class="accessibility-pill">Accessibility <b id="accessibility-value">—</b></span>
-                    </div>
-                    <div id="nearby-resources-list" class="nearby-list">
-                        <p class="empty-hint">Select a location to find nearby resources.</p>
-                    </div>
-                </div>
-
-                <div class="panel-card ai-card" id="ai-insight-card" style="display:none;">
-                    <div class="panel-title">✨ AI Insight <span class="panel-subtitle">Gemini · explains the numbers above</span></div>
-                    <p class="ai-insight-text" id="ai-insight-text"></p>
-                </div>
-
-                <div class="panel-card ai-card" id="ai-advisor-card" style="display:none;">
-                    <div class="panel-title">🧑‍🌾 AI Farm Advisor <span class="panel-subtitle">Prioritized actions</span></div>
-                    <p class="ai-insight-text" id="ai-advisor-text">Not generated yet.</p>
-                    <button type="button" id="get-advisor-btn" class="btn-detect">Get Advisory</button>
-                </div>
-
-                <div class="panel-card ai-card" id="ai-risk-card" style="display:none;">
-                    <div class="panel-title">⚠️ AI Risk Analysis <span class="panel-subtitle">Combines all risk signals</span></div>
-                    <p class="ai-insight-text" id="ai-risk-text">Not generated yet.</p>
-                    <button type="button" id="get-risk-btn" class="btn-detect">Get Risk Analysis</button>
-                </div>
-
-                <div class="panel-card loan-card">
-                    <div class="panel-title">🏦 Loan Eligibility Suggestion</div>
-                    <div class="loan-status" id="loan-status">—</div>
-                    <p class="loan-desc" id="loan-desc">Calculate a Bhumi AI Score to see a suggestion.</p>
-                </div>
-
-                <div class="panel-card" id="bcis-card" style="display:none;">
-                    <div class="panel-title">💳 BCIS Credit Intelligence <span class="panel-subtitle">Income · Risk Tier · Loan Ceiling</span></div>
-                    <div id="bcis-content">
-                        <p class="empty-hint">Not computed yet — needs a farm boundary (for total yield) for the loan ceiling.</p>
-                    </div>
-                    <button type="button" id="compute-bcis-btn" class="btn-detect" style="width:100%;margin-top:8px;">Compute BCIS &amp; Loan Ceiling</button>
-                </div>
-
-                <div class="panel-card">
-                    <div class="panel-title">📄 Full Report</div>
-                    <p class="loan-desc">Soil, cropping history, irrigation, water &amp; regional data live on the Extended Report page.</p>
-                    <a href="report.html" class="btn-detect" style="display:block;text-align:center;text-decoration:none;margin-top:6px;">View Extended Report →</a>
-                    <button id="download-pdf-btn" class="btn-detect" style="display:block;width:100%;margin-top:8px;" disabled>⬇️ Download PDF Report</button>
-                </div>
-
-            </div>
-
+            <aside class="right-column">
+                <section class="farm-calc-card"><h2>Calculate FarmScore</h2><div class="calc-mode-tabs"><button class="active" type="button">By Location</button><button type="button" id="calc-map-mode">By Map</button></div><div class="calc-field"><label>Latitude</label><input type="number" id="lat-input" step="any" placeholder="25.3176"></div><div class="calc-field"><label>Longitude</label><input type="number" id="lng-input" step="any" placeholder="82.9739"></div><div class="calc-field"><label>Area (Optional)</label><div class="calc-row"><input type="text" id="farm-area" placeholder="Draw a farm boundary on map"><select id="area-unit"><option>Hectares</option><option>Acres</option></select></div></div><button class="calc-primary" id="calc-btn"><span class="fab-icon">✦</span><span id="btn-text">Calculate FarmScore</span></button><div class="calc-note">Get an AI-powered farm suitability score, crop recommendation, and loan eligibility.</div><div class="selected-location-mini" id="selected-location-card"><strong id="selected-location-coords">Not selected</strong><span id="selected-location-place">Select a location on the map</span></div></section>
+                <section class="quick-insights"><h3>Quick Insights</h3><div class="qi-row"><span class="qi-icon">🌱</span><div class="qi-label">Best Crop Suggestion</div><div class="qi-value" id="ls-crop">—</div></div><div class="qi-row"><span class="qi-icon">▥</span><div class="qi-label">Farm Score</div><div class="qi-value" id="ls-score">—</div></div><div class="qi-row"><span class="qi-icon">◌</span><div class="qi-label">Risk Level</div><div class="qi-value" id="ls-risk">—</div></div><div class="qi-row"><span class="qi-icon">♧</span><div class="qi-label">Accessibility</div><div class="qi-value" id="accessibility-value">—</div></div><div class="qi-row"><span class="qi-icon">⌂</span><div class="qi-label">Loan Eligibility</div><div class="qi-value success" id="loan-status">—</div></div><p class="loan-desc" id="loan-desc" style="display:none">Calculate a Bhumi AI Score to see a suggestion.</p></section>
+                <section class="panel-card nearby-card" id="nearby-resources-card"><div class="panel-title">Nearby Resources</div><div id="nearby-resources-list" class="nearby-list"><p class="empty-hint">Select a location to find nearby resources.</p></div></section>
+                <section class="panel-card ai-card" id="ai-insight-card" style="display:none"><div class="panel-title">AI Insight</div><p class="ai-insight-text" id="ai-insight-text"></p></section>
+                <section class="panel-card ai-card" id="ai-advisor-card" style="display:none"><div class="panel-title">AI Farm Advisor</div><p class="ai-insight-text" id="ai-advisor-text">Not generated yet.</p><button type="button" id="get-advisor-btn" class="btn-detect">Get Advisory</button></section>
+                <section class="panel-card ai-card" id="ai-risk-card" style="display:none"><div class="panel-title">AI Risk Analysis</div><p class="ai-insight-text" id="ai-risk-text">Not generated yet.</p><button type="button" id="get-risk-btn" class="btn-detect">Get Risk Analysis</button></section>
+                <section class="panel-card" id="bcis-card" style="display:none"><div class="panel-title">BCIS Credit Intelligence</div><div id="bcis-content"><p class="empty-hint">Not computed yet.</p></div><button type="button" id="compute-bcis-btn" class="btn-detect" style="width:100%;margin-top:8px">Compute BCIS &amp; Loan Ceiling</button></section>
+            </aside>
         </div>
 
-        <footer class="app-footer">
-            <span>🛰️ Sentinel-2 · NASA GLDAS · CHIRPS · MODIS LST</span>
-            <span>Real satellite data — not AI-generated.</span>
-        </footer>
-
-        <!-- Hidden functional fields — kept in the DOM and driven by map click /
-             search / geolocation, not shown as raw inputs. -->
-        <div class="visually-hidden">
-            <input type="date" id="start-date" value="2020-08-01">
-            <input type="date" id="end-date" value="2023-10-31">
-            <input type="number" id="lat-input">
-            <input type="number" id="lng-input">
-            <input type="text" id="village-input">
-            <input type="text" id="district-input">
-            <input type="text" id="state-input">
-            <input type="text" id="pincode-input">
-            <input type="text" id="farm-area">
-            <div id="weather-forecast"></div>
-        </div>
-
-    </div>
-
+        <footer class="app-footer"><span>🛰️ Sentinel-2 · NASA GLDAS · CHIRPS · MODIS LST</span><span>Real satellite data — not AI-generated.</span></footer>
+        <div class="visually-hidden"><input type="date" id="start-date" value="2020-08-01"><input type="date" id="end-date" value="2023-10-31"><input type="text" id="village-input"><input type="text" id="district-input"><input type="text" id="state-input"><input type="text" id="pincode-input"><div id="weather-forecast"></div><div id="trend-chart-wrap"></div><div id="ls-climate">—</div><div id="ls-ndwi">—</div><div id="ls-area">—</div><div id="ls-date">—</div></div>
+    </main>
 </div>
 
-<!-- Floating action button — the real, single Calculate control -->
-<button class="fab-calculate" id="calc-btn">
-    <span class="fab-icon">📊</span>
-    <span id="btn-text">Calculate Bhumi AI Score</span>
-</button>
-
-<!-- Floating chat button + panel -->
 <button class="fab-chat" id="chat-toggle-btn" title="Ask Bhumi AI Assistant">💬</button>
+<div class="chat-panel" id="chat-panel"><div class="chat-header"><span>💬 Bhumi AI Assistant</span><button class="chat-close" id="chat-close-btn">✕</button></div><div class="chat-messages" id="chat-messages"><div class="chat-msg chat-msg-bot">Hi! Ask me about farming/satellite terms, or about the farm you just calculated.</div></div><div class="chat-input-row"><input type="text" id="chat-input" placeholder="Ask a question…" maxlength="1000"><button id="chat-send-btn">➤</button></div></div>
 
-<div class="chat-panel" id="chat-panel">
-    <div class="chat-header">
-        <span>💬 Bhumi AI Assistant</span>
-        <button class="chat-close" id="chat-close-btn">✕</button>
-    </div>
-    <div class="chat-messages" id="chat-messages">
-        <div class="chat-msg chat-msg-bot">
-            Hi! Ask me about farming/satellite terms, or about the farm you just calculated.
-        </div>
-    </div>
-    <div class="chat-input-row">
-        <input type="text" id="chat-input" placeholder="Ask a question…" maxlength="1000">
-        <button id="chat-send-btn">➤</button>
-    </div>
-</div>
+<div class="modal-overlay" id="diagnose-overlay"><div class="modal-box"><div class="modal-header"><span>📋 Farm Evaluation — Crop Photo Diagnosis</span><button class="chat-close" id="diagnose-close-btn">✕</button></div><div class="modal-body"><p class="diagnose-hint">Upload a clear photo of an affected leaf or plant. Gemini's vision model will estimate what it sees — this is an AI estimate, not a substitute for a local agricultural extension officer.</p><label class="upload-drop" id="upload-drop"><input type="file" id="diagnose-file-input" accept="image/jpeg,image/png,image/webp"><span id="upload-drop-text">📷 Click to choose a photo (JPEG/PNG/WEBP, max 6MB)</span><img id="diagnose-preview" style="display:none"></label><button class="btn-detect" id="diagnose-submit-btn" disabled>Diagnose Photo</button><div class="diagnose-result" id="diagnose-result" style="display:none"></div></div></div></div>
+<div class="modal-overlay" id="spectral-overlay"><div class="modal-box spectral-modal-box"><div class="modal-header"><span>🔬 Spectral Intelligence — Crop Health Engine</span><button class="chat-close" id="spectral-close-btn">✕</button></div><div class="modal-body"><p class="diagnose-hint" id="spectral-method-note">Estimated from Sentinel-2 multispectral bands (NDVI · NDRE · GNDVI · NDMI · MSI) — this is a validated multispectral-proxy approximation.</p><div id="spectral-loading" class="spectral-loading" style="display:none"><div class="spinner"></div><span>Querying Sentinel-2 spectral bands…</span></div><div id="spectral-content" style="display:none"><div class="spectral-score-row"><div class="mini-score-ring spectral-ring"><svg viewBox="0 0 130 130"><circle cx="65" cy="65" r="54" fill="none" stroke="#dce9df" stroke-width="14"/><circle cx="65" cy="65" r="54" fill="none" stroke="#38bdf8" stroke-width="14" stroke-linecap="round" stroke-dasharray="339.3" stroke-dashoffset="339.3" id="spectral-ring-arc" transform="rotate(-90 65 65)"/></svg><div class="mini-score-center"><span id="spectral-final-score">—</span></div></div><div><div class="score-grade" id="spectral-grade">—</div><div class="coord-display">Spectral Health / 100</div></div></div><div id="spectral-flags" class="spectral-flags"></div><div class="panel-title spectral-subtitle">📊 Index Breakdown</div><div id="spectral-params-grid" class="params-grid"></div><div class="panel-title spectral-subtitle">✨ AI Recommendations</div><div id="spectral-recommendations" class="spectral-recs"></div></div><div id="spectral-error" class="diag-not-plant" style="display:none"></div></div></div></div>
 
-<!-- Crop disease diagnosis modal -->
-<div class="modal-overlay" id="diagnose-overlay">
-    <div class="modal-box">
-
-        <div class="modal-header">
-            <span>📋 Farm Evaluation — Crop Photo Diagnosis</span>
-            <button class="chat-close" id="diagnose-close-btn">✕</button>
-        </div>
-
-        <div class="modal-body">
-
-            <p class="diagnose-hint">
-                Upload a clear photo of an affected leaf or plant. Gemini's
-                vision model will estimate what it sees — this is an AI
-                estimate, not a substitute for a local agricultural
-                extension officer, especially before applying any
-                chemical treatment.
-            </p>
-
-            <label class="upload-drop" id="upload-drop">
-                <input type="file" id="diagnose-file-input" accept="image/jpeg,image/png,image/webp">
-                <span id="upload-drop-text">📷 Click to choose a photo (JPEG/PNG/WEBP, max 6MB)</span>
-                <img id="diagnose-preview" style="display:none;">
-            </label>
-
-            <button class="btn-detect" id="diagnose-submit-btn" disabled>Diagnose Photo</button>
-
-            <div class="diagnose-result" id="diagnose-result" style="display:none;"></div>
-
-        </div>
-
-    </div>
-</div>
-
-<!-- Hyperspectral / Spectral Intelligence modal -->
-<div class="modal-overlay" id="spectral-overlay">
-    <div class="modal-box spectral-modal-box">
-
-        <div class="modal-header">
-            <span>🔬 Spectral Intelligence — Crop Health Engine</span>
-            <button class="chat-close" id="spectral-close-btn">✕</button>
-        </div>
-
-        <div class="modal-body">
-
-            <p class="diagnose-hint" id="spectral-method-note">
-                Estimated from Sentinel-2 multispectral bands (NDVI · NDRE · GNDVI · NDMI · MSI) —
-                true hyperspectral imagery isn't available for arbitrary coordinates, so this is a
-                validated multispectral-proxy approximation, not raw hyperspectral data.
-            </p>
-
-            <div id="spectral-loading" class="spectral-loading" style="display:none;">
-                <div class="spinner"></div>
-                <span>Querying Sentinel-2 spectral bands…</span>
-            </div>
-
-            <div id="spectral-content" style="display:none;">
-
-                <div class="spectral-score-row">
-                    <div class="mini-score-ring spectral-ring">
-                        <svg viewBox="0 0 130 130">
-                            <circle cx="65" cy="65" r="54" fill="none" stroke="#22303c" stroke-width="14"/>
-                            <circle
-                                cx="65" cy="65" r="54" fill="none"
-                                stroke="#38bdf8" stroke-width="14"
-                                stroke-linecap="round"
-                                stroke-dasharray="339.3"
-                                stroke-dashoffset="339.3"
-                                id="spectral-ring-arc"
-                                transform="rotate(-90 65 65)"/>
-                        </svg>
-                        <div class="mini-score-center">
-                            <span id="spectral-final-score">—</span>
-                        </div>
-                    </div>
-                    <div>
-                        <div class="score-grade" id="spectral-grade">—</div>
-                        <div class="coord-display">Spectral Health / 100</div>
-                    </div>
-                </div>
-
-                <div id="spectral-flags" class="spectral-flags"></div>
-
-                <div class="panel-title spectral-subtitle">📊 Index Breakdown</div>
-                <div id="spectral-params-grid" class="params-grid"></div>
-
-                <div class="panel-title spectral-subtitle">✨ AI Recommendations</div>
-                <div id="spectral-recommendations" class="spectral-recs"></div>
-
-            </div>
-
-            <div id="spectral-error" class="diag-not-plant" style="display:none;"></div>
-
-        </div>
-
-    </div>
-</div>
-
-<script src="shell.js"></script>
-<script src="app.js"></script>
-
+<script src="shell.js"></script><script src="app.js"></script>
 </body>
 </html>

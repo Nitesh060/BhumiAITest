@@ -1,9 +1,7 @@
 /* ===================================================================
    shell.js — included on every protected page BEFORE the page's own
-   script. Handles:
-     1. Theme (day/night) — applied immediately to avoid a flash
-     2. Auth guard — redirects to login.html if no valid token
-     3. Injects user info + logout + theme-toggle into the sidebar
+   script. Handles theme, auth, shared UI polish, API configuration,
+   and user controls.
    =================================================================== */
 
 (function applyTheme() {
@@ -11,9 +9,20 @@
     if (saved === "light") document.documentElement.setAttribute("data-theme", "light");
 })();
 
-const BHUMI_API_BASE_URL =
-    window.FARMSCORE_API_URL ||
-    "https://bhumiaitest.onrender.com";
+// Shared API configuration — loaded before page-specific JavaScript.
+window.FARMSCORE_API_URL = window.FARMSCORE_API_URL || "https://bhumiaitest.onrender.com";
+const BHUMI_API_BASE_URL = window.FARMSCORE_API_URL;
+
+// Shared typography/layout layer. Loading it here keeps all protected pages
+// visually consistent without requiring every HTML page to duplicate the link.
+(function loadUiPolish() {
+    if (document.querySelector('link[data-bhumi-ui-polish]')) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "ui-polish.css?v=2";
+    link.dataset.bhumiUiPolish = "true";
+    document.head.appendChild(link);
+})();
 
 function bhumiGetToken() {
     return localStorage.getItem("bhumi_token");
@@ -33,11 +42,6 @@ function bhumiLogout() {
     window.location.href = "login.html";
 }
 
-/** Fetch wrapper that attaches the Bearer token — use for any call to
- * an auth-protected endpoint (Farm Management, Credit Intelligence,
- * Insurance Claims). Falls back to a plain fetch if no token (the
- * backend will correctly respond 401, and the guard below will have
- * already redirected before this is ever called in practice). */
 function bhumiAuthFetch(url, options = {}) {
     const token = bhumiGetToken();
     const headers = { ...(options.headers || {}) };
@@ -65,7 +69,11 @@ function bhumiAuthFetch(url, options = {}) {
         const info = document.createElement("div");
         info.className = "shell-user-info";
         if (user) {
-            info.innerHTML = `<strong>${user.name}</strong>${user.role === "admin" ? "Admin" : "Field Officer"}`;
+            // Use text nodes rather than innerHTML for account-derived data.
+            const strong = document.createElement("strong");
+            strong.textContent = user.name || "User";
+            info.appendChild(strong);
+            info.appendChild(document.createTextNode(user.role === "admin" ? "Admin" : "Field Officer"));
         }
 
         const btnGroup = document.createElement("div");

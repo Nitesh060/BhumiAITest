@@ -1,10 +1,4 @@
-"""Production WSGI wrapper for Bhumi AI.
-
-Adds request-size protection, lightweight per-process rate limiting for
-expensive public APIs, and security response headers without changing the
-Flask route implementation. For multi-worker deployments this is an abuse
-brake, not a substitute for a distributed rate limiter at the edge.
-"""
+"""Production WSGI wrapper for Bhumi AI."""
 
 from __future__ import annotations
 
@@ -17,19 +11,17 @@ from app import app
 MAX_REQUEST_BYTES = int(os.getenv("MAX_REQUEST_BYTES", str(2 * 1024 * 1024)))
 RATE_WINDOW_SECONDS = int(os.getenv("RATE_WINDOW_SECONDS", "60"))
 RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
+ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "").strip()
 EXPENSIVE_PATHS = {
     "/calculate", "/comprehensive-score", "/diagnose", "/spectral",
     "/spectral-indices", "/sar-moisture", "/historical-timeline",
     "/before-after", "/vegetation-heatmap", "/ndvi-heatmap",
     "/crop-intelligence", "/farm-advisor", "/risk-analysis",
 }
-
 _hits: dict[str, deque[float]] = defaultdict(deque)
 
 
 def _client_ip(environ):
-    # Render/proxy environments should only trust X-Forwarded-For when the
-    # proxy chain is controlled. Use REMOTE_ADDR by default for safety.
     return environ.get("REMOTE_ADDR", "unknown")
 
 
@@ -67,15 +59,14 @@ def middleware(environ, start_response):
         return _response(start_response, "400 Bad Request", '{"error":"Invalid Content-Length"}')
 
     if _rate_limited(environ):
-        return _response(
-            start_response,
-            "429 Too Many Requests",
-            '{"error":"Rate limit exceeded. Please wait before retrying."}',
-            [("Retry-After", str(RATE_WINDOW_SECONDS))],
-        )
+        return _response(start_response, "429 Too Many Requests", '{"error":"Rate limit exceeded. Please wait before retrying."}', [("Retry-After", str(RATE_WINDOW_SECONDS))])
 
     def secured_start_response(status, headers, exc_info=None):
-        filtered = [(k, v) for k, v in headers if k.lower() != "server"]
+        filtered = [(k, v) for k, v in headers if k.lower() not in {"server", "access-control-allow-origin", "access-control-allow-credentials"}]
+        origin = environ.get("HTTP_ORIGIN")
+        if ALLOWED_ORIGIN and origin == ALLOWED_ORIGIN:
+            filtered.append(("Access-Control-Allow-Origin", ALLOWED_ORIGIN))
+            filtered.append(("Vary", "Origin"))
         filtered.extend([
             ("X-Content-Type-Options", "nosniff"),
             ("X-Frame-Options", "SAMEORIGIN"),

@@ -1,45 +1,41 @@
 """
 comprehensive_score_service.py
 ================================
-A single weighted-average score across all 20 requested parameters
-(Vegetation, Radar, Weather, Temperature) — separate from the main
-FarmScore (which uses 5 core inputs: NDVI, NDMI, rainfall, temperature,
-groundwater). This is a broader, more granular composite for users who
-want every available signal folded into one number.
-
-Every parameter is normalized to a 0-100 sub-score using a documented,
-transparent formula (see _NORMALIZERS below) before being combined —
-same "show your work" pattern as the rest of this app's scoring.
-
-Default weights (category totals, then split evenly within category):
-  Vegetation  40%  (9 params  -> ~4.44% each)
-  Radar       20%  (4 params  -> 5% each)
-  Weather     30%  (6 params  -> 5% each)
-  Temperature 10%  (1 param   -> 10%)
-
-Weights are fully overridable via the `weights` argument — the
-defaults are a starting point, not a claimed-optimal configuration
-(no ground-truth yield data exists yet to calibrate them against).
+Transparent 0-100 composite score across vegetation, radar and weather
+signals. This is a suitability/condition index, not a validated yield or
+credit-risk model. Thresholds are intentionally conservative and are
+reported as provisional until ground-truth farm outcomes are available.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
-
 DEFAULT_WEIGHTS = {
-    # Vegetation — 40% total
+    # Vegetation — 40%
     "ndvi": 4.44, "evi": 4.44, "savi": 4.44, "msavi": 4.44, "ndre": 4.44,
     "ndmi": 4.44, "ndwi": 4.44, "ci_green": 4.44, "ci_rededge": 4.44,
-    # Radar — 20% total
+    # Radar — 20%
     "vv": 5.0, "vh": 5.0, "vh_vv": 5.0, "rvi": 5.0,
-    # Weather — 30% total
+    # Weather — 30%
     "rainfall": 5.0, "air_temp": 5.0, "solar_radiation": 5.0,
     "spi": 5.0, "spei": 5.0, "gdd": 5.0,
-    # Temperature — 10% total
+    # Temperature — 10%. The app supplies LST here; air_temp is left empty
+    # because the current source is MODIS LST, avoiding double-counting.
     "lst": 10.0,
+}
+
+PARAMETER_LABELS = {
+    "ndvi": "NDVI (Vegetation Health)", "evi": "EVI (Enhanced Vegetation Index)",
+    "savi": "SAVI (Soil Adjusted Vegetation Index)", "msavi": "MSAVI (Modified SAVI)",
+    "ndre": "NDRE (Red Edge / Crop Health)", "ndmi": "NDMI (Vegetation Moisture)",
+    "ndwi": "NDWI (Surface Water / Vegetation Water Signal)",
+    "ci_green": "CI_Green (Chlorophyll Index)", "ci_rededge": "CI_RedEdge (Chlorophyll Index)",
+    "vv": "VV (Radar Backscatter)", "vh": "VH (Cross-polarized Backscatter)",
+    "vh_vv": "VH/VV Ratio", "rvi": "RVI (Radar Vegetation Index)",
+    "rainfall": "Rainfall", "air_temp": "Air Temperature", "solar_radiation": "Solar Radiation",
+    "spi": "SPI (Precipitation Anomaly)", "spei": "SPEI (Water Balance Proxy)",
+    "gdd": "GDD (Growing Degree Days)", "lst": "LST (Land Surface Temperature)",
 }
 
 
@@ -47,52 +43,85 @@ def _clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, v))
 
 
-# ---------------------------------------------------------------------------
-# Normalizers — raw value -> 0-100 sub-score, one per parameter.
-# Thresholds are documented literature-typical ranges for Indian field
-# crops, not fitted to any specific dataset this app has.
-# ---------------------------------------------------------------------------
+def _range_score(v: float, low: float, ideal_low: float, ideal_high: float, high: float) -> float:
+    """Piecewise score: 0 outside plausible bounds, 100 inside the ideal band.
+    This is more defensible for suitability than assuming one universal optimum.
+    """
+    if v <= low or v >= high:
+        return 0.0
+    if ideal_low <= v <= ideal_high:
+        return 100.0
+    if v < ideal_low:
+        return _clamp((v - low) / (ideal_low - low) * 100.0)
+    return _clamp((high - v) / (high - ideal_high) * 100.0)
 
-def _norm_ndvi(v):       return None if v is None else _clamp(v / 0.90 * 100)
-def _norm_evi(v):        return None if v is None else _clamp(v / 0.60 * 100)
-def _norm_savi(v):       return None if v is None else _clamp(v / 0.70 * 100)
-def _norm_msavi(v):      return None if v is None else _clamp(v / 0.90 * 100)
-def _norm_ndre(v):       return None if v is None else _clamp(v / 0.40 * 100)
-def _norm_ndmi(v):       return None if v is None else _clamp((v + 1.0) * 50.0)
-def _norm_ndwi(v):       return None if v is None else _clamp((0.3 - v) / 0.6 * 100)  # more negative NDWI = more vegetated (less water) here
-def _norm_ci_green(v):   return None if v is None else _clamp(v / 5.0 * 100)
-def _norm_ci_rededge(v): return None if v is None else _clamp(v / 3.0 * 100)
 
-def _norm_vv(v):         return None if v is None else _clamp((v + 20) / 15 * 100)   # -20dB->0, -5dB->100
-def _norm_vh(v):         return None if v is None else _clamp((v + 25) / 15 * 100)   # -25dB->0, -10dB->100
-def _norm_vh_vv(v):      return None if v is None else _clamp(v / 0.4 * 100)          # 0-0.4 typical
-def _norm_rvi(v):        return None if v is None else _clamp(v * 100)                # already 0-1
+def _norm_ndvi(v):
+    return None if v is None else _range_score(v, 0.10, 0.45, 0.80, 0.95)
 
-def _norm_rainfall(v, benchmark=6.0):
-    if v is None:
-        return None
-    deviation = abs(benchmark - v)
-    return _clamp(100.0 - 100.0 * deviation / benchmark)
+def _norm_evi(v):
+    return None if v is None else _range_score(v, 0.02, 0.25, 0.55, 0.75)
 
-def _norm_air_temp(v, benchmark=30.0):
-    if v is None:
-        return None
-    deviation = abs(benchmark - v)
-    return _clamp(100.0 - 100.0 * deviation / benchmark)
+def _norm_savi(v):
+    return None if v is None else _range_score(v, 0.02, 0.25, 0.60, 0.85)
 
-def _norm_solar(v):      return None if v is None else _clamp(v / 22.0 * 100)   # ~22 MJ/m2/day = strong
-def _norm_spi(v):        return None if v is None else _clamp(100 - abs(v) * 25)  # 0=normal=100, |SPI|>=4 -> 0
-def _norm_spei(v):       return None if v is None else _clamp(100 - abs(v) * 25)
-def _norm_gdd(v, target=1500):
-    if v is None:
-        return None
-    return _clamp(v / target * 100)
+def _norm_msavi(v):
+    return None if v is None else _range_score(v, 0.02, 0.35, 0.75, 0.95)
 
-def _norm_lst(v, benchmark=30.0):
-    if v is None:
-        return None
-    deviation = abs(benchmark - v)
-    return _clamp(100.0 - 100.0 * deviation / benchmark)
+def _norm_ndre(v):
+    return None if v is None else _range_score(v, 0.02, 0.15, 0.35, 0.50)
+
+def _norm_ndmi(v):
+    return None if v is None else _range_score(v, -0.60, 0.10, 0.50, 0.80)
+
+def _norm_ndwi(v):
+    # NDWI is a water-signal, not a universal "higher is better" metric.
+    # Moderate/low values are preferred for crop-condition suitability;
+    # very high values can indicate standing water/waterlogging.
+    return None if v is None else _range_score(v, -0.60, -0.30, 0.15, 0.70)
+
+def _norm_ci_green(v):
+    return None if v is None else _range_score(v, 0.0, 1.0, 4.0, 8.0)
+
+def _norm_ci_rededge(v):
+    return None if v is None else _range_score(v, 0.0, 0.7, 2.5, 5.0)
+
+def _norm_vv(v):
+    return None if v is None else _range_score(v, -30.0, -18.0, -7.0, 0.0)
+
+def _norm_vh(v):
+    return None if v is None else _range_score(v, -35.0, -23.0, -8.0, 0.0)
+
+def _norm_vh_vv(v):
+    return None if v is None else _range_score(v, 0.02, 0.10, 0.35, 0.70)
+
+def _norm_rvi(v):
+    return None if v is None else _range_score(v, 0.0, 0.20, 0.70, 1.50)
+
+def _norm_rainfall(v):
+    # Daily equivalent is not crop-specific; use a broad field-crop band rather
+    # than pretending 6 mm/day is universally optimal.
+    return None if v is None else _range_score(v, 0.0, 2.0, 6.0, 15.0)
+
+def _norm_air_temp(v):
+    return None if v is None else _range_score(v, 5.0, 18.0, 32.0, 45.0)
+
+def _norm_solar(v):
+    return None if v is None else _range_score(v, 4.0, 12.0, 24.0, 35.0)
+
+def _norm_spi(v):
+    return None if v is None else _clamp(100.0 - abs(v) * 20.0)
+
+def _norm_spei(v):
+    return None if v is None else _clamp(100.0 - abs(v) * 20.0)
+
+def _norm_gdd(v):
+    # GDD is crop/season dependent. Treat this only as a broad indicator and
+    # avoid the previous one-sided rule where all values above 1500 scored 100.
+    return None if v is None else _range_score(v, 200.0, 900.0, 2200.0, 3500.0)
+
+def _norm_lst(v):
+    return None if v is None else _range_score(v, 5.0, 18.0, 32.0, 45.0)
 
 
 _NORMALIZERS = {
@@ -104,64 +133,44 @@ _NORMALIZERS = {
     "spi": _norm_spi, "spei": _norm_spei, "gdd": _norm_gdd, "lst": _norm_lst,
 }
 
-PARAMETER_LABELS = {
-    "ndvi": "NDVI (Vegetation Health)", "evi": "EVI (Enhanced Vegetation Index)",
-    "savi": "SAVI (Soil Adjusted Vegetation Index)", "msavi": "MSAVI (Modified SAVI)",
-    "ndre": "NDRE (Nitrogen / Red Edge Health)", "ndmi": "NDMI (Moisture Index)",
-    "ndwi": "NDWI (Water Index)", "ci_green": "CI_Green (Chlorophyll Index Green)",
-    "ci_rededge": "CI_RedEdge (Chlorophyll Index Red Edge)",
-    "vv": "VV (Radar Vertical-Vertical Backscatter)", "vh": "VH (Radar Vertical-Horizontal Backscatter)",
-    "vh_vv": "VH/VV Ratio", "rvi": "RVI (Radar Vegetation Index)",
-    "rainfall": "Rainfall", "air_temp": "Air Temperature (LST proxy)",
-    "solar_radiation": "Solar Radiation", "spi": "SPI (Standardized Precipitation Index)",
-    "spei": "SPEI (Thornthwaite proxy)", "gdd": "GDD (Growing Degree Days)",
-    "lst": "LST (Land Surface Temperature)",
-}
-
 
 def compute_comprehensive_score(raw_values: Dict[str, Optional[float]],
-                                 weights: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
-    """raw_values: {"ndvi": 0.64, "evi": 0.45, ..., "lst": 29.1, ...} —
-    any subset of the 20 parameter keys above. Missing/None values are
-    excluded from the average and their weight is redistributed
-    proportionally across the parameters that ARE available, so a
-    missing SPEI doesn't silently zero out 5% of the score.
-    """
+                                weights: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     weights = weights or DEFAULT_WEIGHTS
-
     components = {}
     available_weight_sum = 0.0
 
     for key, raw in raw_values.items():
         if key not in _NORMALIZERS:
             continue
-        normalizer = _NORMALIZERS[key]
-        sub_score = normalizer(raw)
-        weight = weights.get(key, 0)
+        try:
+            numeric = None if raw is None else float(raw)
+        except (TypeError, ValueError):
+            numeric = None
+        sub_score = _NORMALIZERS[key](numeric)
+        weight = max(0.0, float(weights.get(key, 0.0)))
         components[key] = {
             "label": PARAMETER_LABELS.get(key, key),
-            "raw_value": raw,
+            "raw_value": numeric,
             "sub_score": round(sub_score, 2) if sub_score is not None else None,
             "weight_pct": weight,
         }
-        if sub_score is not None:
+        if sub_score is not None and weight > 0:
             available_weight_sum += weight
 
-    if available_weight_sum == 0:
-        return {"score": None, "reason": "No usable parameters were provided.", "components": components}
+    if available_weight_sum <= 0:
+        return {"score_0_100": None, "reason": "No usable parameters were provided.", "components": components}
 
     weighted_sum = 0.0
-    for key, c in components.items():
-        if c["sub_score"] is not None:
-            # redistribute weight proportionally among available params
+    for c in components.values():
+        if c["sub_score"] is not None and c["weight_pct"] > 0:
             effective_weight = c["weight_pct"] / available_weight_sum
-            contribution = effective_weight * c["sub_score"]
             c["effective_weight_pct"] = round(effective_weight * 100, 2)
-            c["contribution"] = round(contribution, 2)
-            weighted_sum += contribution
+            c["contribution"] = round(effective_weight * c["sub_score"], 2)
+            weighted_sum += effective_weight * c["sub_score"]
 
     final_score_0_100 = round(weighted_sum, 2)
-    final_score_300_900 = round(300 + (final_score_0_100 / 100) * 600)  # match main FarmScore's 300-900 scale for consistency
+    final_score_300_900 = round(300 + (final_score_0_100 / 100) * 600)
 
     if final_score_0_100 >= 80:
         grade = "Excellent"
@@ -174,12 +183,24 @@ def compute_comprehensive_score(raw_values: Dict[str, Optional[float]],
     else:
         grade = "Poor"
 
+    used = sum(1 for c in components.values() if c["sub_score"] is not None)
+    total = len(_NORMALIZERS)
+    # A score can still be displayed with sparse data, but it must be clearly
+    # marked provisional instead of looking statistically validated.
+    if used >= 15:
+        confidence = "high"
+    elif used >= 10:
+        confidence = "moderate"
+    else:
+        confidence = "low"
+
     return {
         "score_0_100": final_score_0_100,
         "score_300_900": final_score_300_900,
         "grade": grade,
+        "confidence": confidence,
         "components": components,
-        "parameters_used": len([c for c in components.values() if c["sub_score"] is not None]),
-        "parameters_total": len(components),
-        "method": "Weighted average of 0-100 normalized sub-scores per parameter. Missing parameters' weight is redistributed proportionally, not dropped silently.",
+        "parameters_used": used,
+        "parameters_total": total,
+        "method": "Weighted average of transparent 0-100 suitability sub-scores. Missing parameters are redistributed proportionally. Thresholds are provisional and require ground-truth calibration before credit decisions.",
     }

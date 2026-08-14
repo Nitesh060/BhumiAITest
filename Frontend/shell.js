@@ -1,7 +1,7 @@
 /* ===================================================================
    shell.js — included on every protected page BEFORE the page's own
    script. Handles theme, auth, shared UI polish, API configuration,
-   dashboard composition, and user controls.
+   and user controls.
    =================================================================== */
 
 (function applyTheme() {
@@ -16,17 +16,15 @@ const BHUMI_API_BASE_URL = window.FARMSCORE_API_URL;
     if (document.querySelector('link[data-bhumi-ui-polish]')) return;
     const link = document.createElement("link");
     link.rel = "stylesheet";
-    link.href = "ui-polish.css?v=3";
+    link.href = "ui-polish.css?v=4";
     link.dataset.bhumiUiPolish = "true";
     document.head.appendChild(link);
-})();
 
-(function loadDashboardUi() {
-    if (!window.location.pathname.endsWith("index.html") && window.location.pathname !== "/") return;
-    const script = document.createElement("script");
-    script.src = "dashboard-ui.js?v=1";
-    script.defer = true;
-    document.head.appendChild(script);
+    const dashboardCss = document.createElement("link");
+    dashboardCss.rel = "stylesheet";
+    dashboardCss.href = "dashboard-reference.css?v=1";
+    dashboardCss.dataset.bhumiDashboardReference = "true";
+    document.head.appendChild(dashboardCss);
 })();
 
 function bhumiGetToken() {

@@ -2,12 +2,18 @@ const API_BASE_URL =
     window.FARMSCORE_API_URL ||
     "https://bhumiaitest.onrender.com";
 
+function escapeHTML(value) {
+    return String(value ?? "—").replace(/[&<>'"]/g, ch => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"
+    }[ch]));
+}
+
 function row(icon, label, value) {
     return `
         <div class="enrichment-row">
-            <span class="er-icon">${icon}</span>
-            <span class="er-label">${label}</span>
-            <span class="er-value">${value}</span>
+            <span class="er-icon">${escapeHTML(icon)}</span>
+            <span class="er-label">${escapeHTML(label)}</span>
+            <span class="er-value">${escapeHTML(value)}</span>
         </div>`;
 }
 
@@ -22,7 +28,7 @@ function renderIdentification(id) {
         row("📊", "Confidence", id.confidence),
         row("📈", "Peak NDVI Month", `${id.peak_ndvi_month} (NDVI ${id.peak_ndvi})`),
         row("💧", "Early-season Flood Signature", id.flood_signature_detected ? "Detected (paddy-like)" : "Not detected"),
-    ].join("") + `<p class="empty-hint" style="margin-top:8px;">${id.note}</p>`;
+    ].join("") + `<p class="empty-hint" style="margin-top:8px;">${escapeHTML(id.note || "")}</p>`;
 }
 
 function renderGrowthStage(gs) {
@@ -48,13 +54,13 @@ function renderSowingHarvest(sh) {
         row("🌱", "Estimated Sowing", sh.sowing_estimate_month || "—"),
         row("🌾", "Estimated Harvest", sh.harvest_estimate_month || "—"),
         row("📖", "Source", sh.source),
-    ].join("") + (sh.note ? `<p class="empty-hint" style="margin-top:8px;">${sh.note}</p>` : "");
+    ].join("") + (sh.note ? `<p class="empty-hint" style="margin-top:8px;">${escapeHTML(sh.note)}</p>` : "");
 }
 
 function renderRotation(rot) {
-    document.getElementById("rotation-summary").textContent = rot.summary || "No rotation data.";
+    document.getElementById("rotation-summary").textContent = rot?.summary || "No rotation data.";
     const tableEl = document.getElementById("rotation-table");
-    if (!rot.years || !rot.years.length) {
+    if (!rot?.years?.length) {
         tableEl.innerHTML = "";
         return;
     }
@@ -62,7 +68,7 @@ function renderRotation(rot) {
         <table class="report-table">
             <thead><tr><th>Year</th><th>Kharif</th><th>Rabi</th></tr></thead>
             <tbody>
-                ${rot.years.map(y => `<tr><td>${y.year}</td><td>${y.kharif}</td><td>${y.rabi}</td></tr>`).join("")}
+                ${rot.years.map(y => `<tr><td>${escapeHTML(y.year)}</td><td>${escapeHTML(y.kharif)}</td><td>${escapeHTML(y.rabi)}</td></tr>`).join("")}
             </tbody>
         </table>`;
 }
@@ -74,7 +80,7 @@ function renderCalendar(cal) {
         return;
     }
     const rows = Object.entries(cal).map(([season, info]) => `
-        <tr><td>${season}</td><td>${info.sow}</td><td>${info.harvest}</td><td>${info.duration_days} days</td></tr>
+        <tr><td>${escapeHTML(season)}</td><td>${escapeHTML(info.sow)}</td><td>${escapeHTML(info.harvest)}</td><td>${escapeHTML(info.duration_days)} days</td></tr>
     `).join("");
     el.innerHTML = `
         <table class="report-table">
@@ -90,7 +96,8 @@ async function loadCropIntelligence(farmData) {
 
     try {
         const res = await fetch(`${API_BASE_URL}/crop-intelligence`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ lat: farmData.coordinates.lat, lng: farmData.coordinates.lng, polygon: farmData.polygon || null }),
         });
         const data = await res.json();
@@ -98,13 +105,13 @@ async function loadCropIntelligence(farmData) {
 
         document.getElementById("ci-loading").style.display = "none";
         document.getElementById("ci-content").style.display = "block";
-
         renderIdentification(data.identification);
         renderGrowthStage(data.growth_stage);
         renderSowingHarvest(data.sowing_harvest_prediction);
         renderRotation(data.crop_rotation);
         renderCalendar(data.crop_calendar);
     } catch (err) {
+        console.error(err);
         document.getElementById("ci-loading").style.display = "none";
         const errBox = document.getElementById("error-box");
         errBox.textContent = "Could not load crop intelligence. Please try again.";
@@ -117,10 +124,10 @@ function init() {
     try {
         const raw = sessionStorage.getItem("farmscore_last_result");
         if (raw) farmData = JSON.parse(raw);
-    } catch (err) { /* ignore */ }
-
-    if (!farmData) return;
-
+    } catch (err) {
+        console.warn("Could not restore last farm result", err);
+    }
+    if (!farmData?.coordinates) return;
     document.getElementById("ci-subtitle").textContent = `${farmData.coordinates.lat}° N, ${farmData.coordinates.lng}° E`;
     loadCropIntelligence(farmData);
 }

@@ -1,16 +1,13 @@
 """
 auth_service.py
 ================
-Simple JWT-based auth for two roles: "admin" and "field_officer".
+JWT authentication for Bhumi AI's internal users.
 
-Not a full identity system — no email verification, password reset,
-or refresh tokens. Good enough for an internal team tool; revisit if
-this ever needs to face external users.
-
-Bootstrap: the FIRST user ever registered automatically becomes an
-admin (so there's always at least one). Every user after that must be
-created by an existing admin via POST /auth/register with a valid
-admin token.
+Production safety:
+- JWT_SECRET must be configured when ENVIRONMENT=production.
+- Passwords are hashed with Werkzeug.
+- Additional users require an admin token.
+- Destructive farmer/farm deletes are admin-only.
 """
 
 from __future__ import annotations
@@ -30,21 +27,38 @@ from models import User
 
 logger = logging.getLogger(__name__)
 
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-insecure-secret-change-me")
-JWT_ALGO = "HS256"
-TOKEN_EXPIRY_HOURS = 12
+ENVIRONMENT = os.getenv("ENVIRONMENT", os.getenv("FLASK_ENV", "development")).lower()
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    if ENVIRONMENT in {"production", "prod"}:
+        raise RuntimeError("JWT_SECRET must be set in production")
+    JWT_SECRET = "dev-insecure-secret-change-me"
+    logger.warning("JWT_SECRET not set — using development-only insecure default")
 
-if JWT_SECRET == "dev-insecure-secret-change-me":
-    logger.warning("JWT_SECRET not set — using an insecure default. Set JWT_SECRET on the server before real use.")
+JWT_ALGO = "HS256"
+TOKEN_EXPIRY_HOURS = int(os.getenv("TOKEN_EXPIRY_HOURS", "12"))
+MIN_PASSWORD_LENGTH = int(os.getenv("MIN_PASSWORD_LENGTH", "10"))
 
 
 def register_user(db: Session, username: str, password: str, name: str, role: str = "field_officer") -> User:
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
+    username = username.strip()
+    name = name.strip()
+    if not username or not name:
+        raise ValueError("Username and name cannot be empty")
+
     is_first_user = db.query(User).count() == 0
     final_role = "admin" if is_first_user else role
     if final_role not in ("admin", "field_officer"):
-        final_role = "field_officer"
+        raise ValueError("Invalid role")
 
-    user = User(username=username, password_hash=generate_password_hash(password), name=name, role=final_role)
+    user = User(
+        username=username,
+        password_hash=generate_password_hash(password),
+        name=name,
+        role=final_role,
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -60,7 +74,10 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
 
 def generate_token(user: User) -> str:
     payload = {
-        "user_id": user.id, "username": user.username, "role": user.role, "name": user.name,
+        "user_id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "name": user.name,
         "exp": datetime.now(timezone.utc) + timedelta(hours=TOKEN_EXPIRY_HOURS),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
@@ -69,17 +86,12 @@ def generate_token(user: User) -> str:
 def decode_token(token: str) -> Optional[dict]:
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None
 
 
 def require_auth(roles: Optional[list] = None):
-    """Route decorator. Usage: @require_auth() or @require_auth(["admin"]).
-    Expects an `Authorization: Bearer <token>` header. On success,
-    attaches the decoded payload to `request.user`.
-    """
+    """Route decorator. Usage: @require_auth() or @require_auth(["admin"])."""
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
@@ -87,13 +99,19 @@ def require_auth(roles: Optional[list] = None):
             if not auth_header.startswith("Bearer "):
                 return jsonify({"error": "Missing or invalid Authorization header"}), 401
 
-            token = auth_header[len("Bearer "):]
+            token = auth_header[len("Bearer "):].strip()
             payload = decode_token(token)
             if not payload:
                 return jsonify({"error": "Invalid or expired token"}), 401
 
             if roles and payload.get("role") not in roles:
                 return jsonify({"error": "Insufficient permissions for this action"}), 403
+
+            # A field officer may read and update operational records, but
+            # deleting farmer/farm records is restricted to admins.
+            if request.method == "DELETE" and request.path.startswith(("/farmers", "/farms")):
+                if payload.get("role") != "admin":
+                    return jsonify({"error": "Only an admin can delete farmer/farm records"}), 403
 
             request.user = payload
             return fn(*args, **kwargs)

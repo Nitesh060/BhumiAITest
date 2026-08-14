@@ -1,0 +1,1 @@
+The dashboard API endpoint is configured by window.FARMSCORE_API_URL. Set it before loading app.js when deploying the frontend. Default production backend: https://bhumiaitest.onrender.com

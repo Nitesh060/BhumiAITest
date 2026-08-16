@@ -20,10 +20,11 @@ const BHUMI_API_BASE_URL = window.FARMSCORE_API_URL;
     link.dataset.bhumiUiPolish = "true";
     document.head.appendChild(link);
 
+    // Approved light reference theme for the main BHUMI dashboard.
     const dashboardCss = document.createElement("link");
     dashboardCss.rel = "stylesheet";
-    dashboardCss.href = "dashboard-reference.css?v=1";
-    dashboardCss.dataset.bhumiDashboardReference = "true";
+    dashboardCss.href = "dashboard-light.css?v=2";
+    dashboardCss.dataset.bhumiDashboardLight = "true";
     document.head.appendChild(dashboardCss);
 })();
 

@@ -7,6 +7,9 @@ import time
 from collections import defaultdict, deque
 
 from app import app
+from alphaearth_service import register_alphaearth_routes
+
+register_alphaearth_routes(app)
 
 MAX_REQUEST_BYTES = int(os.getenv("MAX_REQUEST_BYTES", str(2 * 1024 * 1024)))
 RATE_WINDOW_SECONDS = int(os.getenv("RATE_WINDOW_SECONDS", "60"))

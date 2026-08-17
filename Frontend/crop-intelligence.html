@@ -1,29 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bhumi AI — Crop Intelligence</title>
-
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css" />
 </head>
-
 <body>
-
 <div class="app-shell">
-
     <aside class="side-nav">
         <div class="nav-logo">
             <div class="logo-mark">🌱</div>
-            <div>
-                <h1>Bhumi AI</h1>
-                <p>Smart Land. Strong Future.</p>
-            </div>
+            <div><h1>Bhumi AI</h1><p>Smart Land. Strong Future.</p></div>
         </div>
-
         <nav class="nav-links">
             <a class="nav-link" href="index.html"><span>🏠</span> Dashboard</a>
             <a class="nav-link" id="nav-diagnose-btn"><span>📋</span> Farm Evaluation</a>
@@ -35,39 +26,41 @@
             <a class="nav-link" href="insurance-claim.html"><span>🛡️</span> Insurance Claims</a>
             <a class="nav-link" href="dashboard-overview.html"><span>📊</span> Portfolio &amp; Admin</a>
         </nav>
-
         <div class="nav-footer-card">
             <div class="nfc-title">Crop Intelligence</div>
-            <p>Which crop is likely growing, its growth stage, sowing/harvest windows, and rotation pattern.</p>
+            <p>Current crop hypothesis, growth stage, sowing/harvest windows and 3-year rotation evidence.</p>
         </div>
     </aside>
 
     <div class="main-col">
-
         <header class="top-bar">
             <div>
                 <h2 style="margin:0;font-size:1rem;">🌾 Crop Intelligence</h2>
                 <p class="panel-subtitle" id="ci-subtitle" style="margin:2px 0 0;">No farm calculated yet</p>
             </div>
+            <span class="topbar-spacer"></span>
+            <a class="btn-detect" href="report.html" style="text-decoration:none;">📄 Extended Report</a>
         </header>
 
         <div class="error-box" id="error-box"></div>
 
         <div id="ci-empty-state" class="panel-card" style="margin:14px 0;">
-            <p class="empty-hint">
-                No farm data found. Go to <a href="index.html" style="color:var(--accent,#2f9e63);">Dashboard</a>,
-                pick a location and calculate a Bhumi AI Score first — this page reads that result.
-            </p>
+            <p class="empty-hint">No farm data found. Go to <a href="index.html" style="color:var(--accent,#2f9e63);">Dashboard</a>, select a location and calculate a Bhumi AI Score first.</p>
         </div>
 
         <div id="ci-loading" class="panel-card" style="display:none;margin:14px 0;">
-            <p class="empty-hint">Analyzing crop pattern… this can take 20-30 seconds.</p>
+            <p class="empty-hint">Analyzing crop pattern from satellite NDVI history…</p>
         </div>
 
         <div id="ci-content" style="display:none;">
+            <div class="panel-card" style="margin-bottom:14px;">
+                <div class="panel-title">🎯 Crop Intelligence Snapshot</div>
+                <div id="ci-summary-list" class="enrichment-list"></div>
+                <p class="empty-hint" style="margin-top:8px;">This page separates a <b>crop recommendation</b> from a <b>current-crop identification hypothesis</b>. They are not the same claim.</p>
+            </div>
 
             <div class="panel-card" style="margin-bottom:14px;">
-                <div class="panel-title">🔍 Crop Identification <span class="panel-subtitle">Heuristic, not ML-verified</span></div>
+                <div class="panel-title">🔍 Current Crop Identification <span class="panel-subtitle">Heuristic, not ML-verified</span></div>
                 <div id="identification-list" class="enrichment-list"></div>
             </div>
 
@@ -82,7 +75,7 @@
             </div>
 
             <div class="panel-card" style="margin-bottom:14px;">
-                <div class="panel-title">🔄 Crop Rotation (3-year)</div>
+                <div class="panel-title">🔄 Crop Rotation Evidence (3-year)</div>
                 <div id="rotation-summary" style="font-size:0.78rem;margin-bottom:8px;"></div>
                 <div id="rotation-table"></div>
             </div>
@@ -92,16 +85,24 @@
                 <div id="calendar-table"></div>
             </div>
 
+            <div class="panel-card" style="margin-bottom:14px;">
+                <div class="panel-title">🧠 Methodology &amp; Limitations</div>
+                <div class="enrichment-list">
+                    <div class="enrichment-row"><span class="er-icon">🛰️</span><span class="er-label">Primary signal</span><span class="er-value">Seasonal Sentinel-2 NDVI pattern</span></div>
+                    <div class="enrichment-row"><span class="er-icon">💧</span><span class="er-label">Rice signal</span><span class="er-value">Early-season water/flood signature</span></div>
+                    <div class="enrichment-row"><span class="er-icon">🔄</span><span class="er-label">Rotation signal</span><span class="er-value">Kharif/Rabi cropped-vs-fallow history</span></div>
+                    <div class="enrichment-row"><span class="er-icon">⚠️</span><span class="er-label">Validation</span><span class="er-value">No labelled ground-truth crop dataset in this module</span></div>
+                </div>
+                <p class="empty-hint" style="margin-top:8px;">Use this as a screening hypothesis. Field photos, farmer confirmation or a locally trained crop-classification model should be used for confirmation.</p>
+            </div>
         </div>
 
         <footer class="app-footer">
-            <span>🌾 Rule-based crop intelligence</span>
-            <span>Indicative — not a substitute for field verification.</span>
+            <span>🛰️ Sentinel-2 · NDVI seasonal analysis</span>
+            <span>Indicative intelligence — field verification recommended.</span>
         </footer>
-
     </div>
 </div>
-
 <script src="shell.js"></script>
 <script src="crop-intelligence.js"></script>
 </body>

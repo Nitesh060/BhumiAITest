@@ -9,6 +9,8 @@ from collections import defaultdict, deque
 from app import app
 from alphaearth_service import register_alphaearth_routes
 
+# Keep AlphaEarth registration in the WSGI entrypoint so the endpoint is
+# available in the exact process used by Render/Gunicorn.
 register_alphaearth_routes(app)
 
 MAX_REQUEST_BYTES = int(os.getenv("MAX_REQUEST_BYTES", str(2 * 1024 * 1024)))

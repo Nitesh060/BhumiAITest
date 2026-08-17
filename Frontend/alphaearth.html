@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BHUMI — AlphaEarth Explorer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    :root{--ink:#17352a;--muted:#6c7d74;--line:#dfe9e2;--bg:#f5f8f5;--card:#fff;--accent:#188b45;--accent2:#0f6d36;--soft:#eaf5ed;--shadow:0 12px 35px rgba(20,55,38,.08)}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:Manrope,Arial,sans-serif}.shell{min-height:100vh;display:grid;grid-template-columns:245px 1fr}.side{background:#fff;border-right:1px solid var(--line);padding:22px 16px;display:flex;flex-direction:column}.brand{display:flex;gap:11px;align-items:center;padding:4px 8px 28px}.logo{width:42px;height:42px;border-radius:13px;background:var(--soft);display:grid;place-items:center;font-size:22px}.brand h1{font-family:'Plus Jakarta Sans';font-size:18px;margin:0}.brand p{font-size:9px;color:var(--muted);margin:2px 0}.nav a{display:block;text-decoration:none;color:#547066;padding:12px 13px;border-radius:10px;font-size:13px;font-weight:700;margin:3px 0}.nav a:hover,.nav a.active{background:var(--soft);color:var(--accent2)}.foot{margin-top:auto;background:#f1f7f2;border:1px solid var(--line);border-radius:14px;padding:14px;font-size:11px;color:var(--muted)}.foot strong{display:block;color:var(--ink);margin-bottom:5px}.main{padding:24px 28px 34px;max-width:1500px;width:100%;margin:auto}.top{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:20px}.eyebrow{font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}h2{font-family:'Plus Jakarta Sans';font-size:28px;margin:5px 0 7px}.sub{color:var(--muted);font-size:13px;margin:0}.badge{background:var(--soft);color:var(--accent2);padding:8px 12px;border-radius:999px;font-size:11px;font-weight:800}.controls,.card{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}.controls{padding:16px;display:grid;grid-template-columns:1fr 1fr 150px 150px auto;gap:10px;align-items:end;margin-bottom:16px}.field label{display:block;font-size:10px;font-weight:800;color:var(--muted);margin:0 0 6px}.field input,.field select{width:100%;border:1px solid #d6e2da;border-radius:9px;padding:10px 11px;background:#fff;color:var(--ink);outline:none;font:600 12px Manrope}.btn{border:0;border-radius:10px;padding:11px 15px;background:var(--accent);color:#fff;font:800 12px Manrope;cursor:pointer}.btn:hover{background:var(--accent2)}.grid{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(340px,.8fr);gap:16px}.card{padding:16px}.map-card{padding:0;overflow:hidden}.map-head{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}.map-head strong{font-size:13px}.map-head span{font-size:10px;color:var(--muted)}#map{height:600px}.right{display:grid;gap:16px;align-content:start}.metric-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.metric{background:#f7faf7;border:1px solid var(--line);border-radius:12px;padding:12px}.metric span{font-size:9px;color:var(--muted);font-weight:700}.metric strong{display:block;font-size:18px;margin-top:4px}.section-title{font-size:13px;font-weight:800;margin-bottom:12px}.similarity{display:flex;align-items:center;gap:15px}.sim-ring{width:82px;height:82px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--accent) 0deg,#e4eee7 0deg)}.sim-ring:after{content:'';width:62px;height:62px;background:#fff;border-radius:50%}.sim-value{position:absolute;font-size:16px;font-weight:800}.sim-wrap{position:relative;display:grid;place-items:center}.sim-text{font-size:11px;color:var(--muted);line-height:1.5}.vector{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;max-height:340px;overflow:auto;padding-right:3px}.v{border:1px solid var(--line);border-radius:8px;padding:7px 8px;background:#fbfdfb}.v b{font-size:9px;color:var(--muted)}.v span{display:block;font-size:11px;font-weight:800;margin-top:2px}.bar{height:3px;background:#dce9df;border-radius:5px;margin-top:5px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent);border-radius:5px}.meta{display:grid;grid-template-columns:1fr 1fr;gap:8px}.meta div{padding:9px 10px;border:1px solid var(--line);border-radius:9px}.meta small{display:block;font-size:9px;color:var(--muted)}.meta strong{font-size:11px}.status{font-size:11px;color:var(--muted);margin-top:8px;min-height:16px}.notice{padding:11px 13px;border-radius:10px;background:#fff8e7;color:#795d13;font-size:10px;line-height:1.5;border:1px solid #f1dfae}.source{margin-top:14px;text-align:right;color:var(--muted);font-size:9px}.leaflet-control-attribution{font-size:8px}@media(max-width:1000px){.shell{grid-template-columns:1fr}.side{display:none}.main{padding:18px}.controls{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr}#map{height:460px}}@media(max-width:600px){.controls{grid-template-columns:1fr}.top{display:block}.badge{display:inline-block;margin-top:12px}.metric-row{grid-template-columns:1fr 1fr}.vector{grid-template-columns:repeat(3,1fr)}}
+  </style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="brand"><div class="logo">🌱</div><div><h1>BHUMI</h1><p>AI for Bharat, Bharat for AI</p></div></div>
+    <nav class="nav">
+      <a href="index.html">⌂ &nbsp; Dashboard</a>
+      <a href="satellite-intelligence.html">◉ &nbsp; Satellite Intelligence</a>
+      <a class="active" href="alphaearth.html">✦ &nbsp; AlphaEarth Explorer</a>
+      <a href="crop-intelligence.html">❧ &nbsp; Crop Intelligence</a>
+      <a href="farm-management.html">♟ &nbsp; Farm Management</a>
+    </nav>
+    <div class="foot"><strong>AlphaEarth Foundations</strong>Google's 64-dimensional satellite embedding field, exposed here as an independent exploration page.</div>
+  </aside>
+  <main class="main">
+    <div class="top"><div><div class="eyebrow">Geospatial AI Explorer</div><h2>AlphaEarth Foundations</h2><p class="sub">Explore Google's annual 64-dimensional Satellite Embedding at 10 m resolution.</p></div><div class="badge">2017–2024 • 10 m • 64D</div></div>
+    <section class="controls">
+      <div class="field"><label>LATITUDE</label><input id="lat" type="number" step="any" value="20.2961"></div>
+      <div class="field"><label>LONGITUDE</label><input id="lng" type="number" step="any" value="85.8245"></div>
+      <div class="field"><label>YEAR</label><select id="year"></select></div>
+      <div class="field"><label>COMPARE YEAR</label><select id="compare"><option value="">None</option></select></div>
+      <button class="btn" id="analyze">Analyze</button>
+    </section>
+    <div class="grid">
+      <section class="card map-card"><div class="map-head"><strong>AlphaEarth Embedding Composite</strong><span id="map-label">Select a location and year</span></div><div id="map"></div></section>
+      <aside class="right">
+        <section class="card"><div class="section-title">Location & Dataset</div><div class="metric-row"><div class="metric"><span>LATITUDE</span><strong id="out-lat">—</strong></div><div class="metric"><span>LONGITUDE</span><strong id="out-lng">—</strong></div><div class="metric"><span>YEAR</span><strong id="out-year">—</strong></div></div><div class="meta" style="margin-top:10px"><div><small>Resolution</small><strong>10 metres</strong></div><div><small>Dimensions</small><strong>64</strong></div><div><small>Dataset</small><strong>Satellite Embedding V1</strong></div><div><small>Model</small><strong>AlphaEarth Foundations</strong></div></div><div class="status" id="status"></div></section>
+        <section class="card"><div class="section-title">Year-to-Year Similarity</div><div class="similarity"><div class="sim-wrap"><div class="sim-ring" id="sim-ring"></div><div class="sim-value" id="sim-value">—</div></div><div class="sim-text" id="sim-text">Choose a comparison year to calculate cosine similarity between the two 64D vectors.</div></div></section>
+        <section class="card"><div class="section-title">64D Embedding Vector</div><div class="vector" id="vector"><div class="status">Run an analysis to load A00–A63.</div></div></section>
+        <section class="notice">The 64 axes are a joint embedding space; individual axes such as A01 should not be interpreted as standalone physical measurements. The map composite follows Google's documented example using A01, A16 and A09.</section>
+      </aside>
+    </div>
+    <div class="source">Dataset attribution: “AlphaEarth Foundations Satellite Embedding” created by Google and Google DeepMind. <span>Data accessed through Google Earth Engine.</span></div>
+  </main>
+</div>
+<script>
+const API = window.FARMSCORE_API_URL || 'https://bhumiaitest.onrender.com';
+const years = Array.from({length:8},(_,i)=>2017+i);
+const yearEl=document.getElementById('year'), compareEl=document.getElementById('compare');
+years.forEach(y=>{yearEl.add(new Option(String(y),y));compareEl.add(new Option(String(y),y));});
+yearEl.value='2024'; compareEl.value='2023';
+let map=L.map('map').setView([20.2961,85.8245],10), marker=null, layer=null;
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+map.on('click',e=>{document.getElementById('lat').value=e.latlng.lat.toFixed(6);document.getElementById('lng').value=e.latlng.lng.toFixed(6);});
+function esc(v){return String(v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));}
+function renderVector(obj){const vals=Object.entries(obj);document.getElementById('vector').innerHTML=vals.map(([k,v])=>{const n=Number(v);const pct=Math.max(2,Math.min(100,Math.abs(n)*100));return `<div class="v"><b>${k}</b><span>${n.toFixed(5)}</span><div class="bar"><i style="width:${pct}%"></i></div></div>`}).join('');}
+function renderSimilarity(c){const value=c?.cosine_similarity;if(value==null){document.getElementById('sim-value').textContent='—';document.getElementById('sim-text').textContent='Choose a comparison year to calculate cosine similarity between the two 64D vectors.';document.getElementById('sim-ring').style.background='conic-gradient(var(--accent) 0deg,#e4eee7 0deg)';return;}const pct=Math.round(Math.max(0,Math.min(1,value))*100);document.getElementById('sim-value').textContent=pct+'%';document.getElementById('sim-ring').style.background=`conic-gradient(var(--accent) ${pct*3.6}deg,#e4eee7 0deg)`;document.getElementById('sim-text').innerHTML=`Cosine similarity between <b>${c.year}</b> and the selected year. Higher values mean the two annual embedding vectors are more similar.`;}
+async function analyze(){const lat=Number(document.getElementById('lat').value),lng=Number(document.getElementById('lng').value),year=Number(yearEl.value),compare=compareEl.value;const status=document.getElementById('status');status.textContent='Querying Google Earth Engine…';document.getElementById('analyze').disabled=true;try{let url=`${API}/alphaearth?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}&year=${year}`;if(compare)url+=`&compare_year=${compare}`;const res=await fetch(url);const data=await res.json();if(!res.ok)throw new Error(data.error||'AlphaEarth request failed');document.getElementById('out-lat').textContent=data.latitude.toFixed(5);document.getElementById('out-lng').textContent=data.longitude.toFixed(5);document.getElementById('out-year').textContent=data.year;renderVector(data.embedding);renderSimilarity(data.comparison);if(layer)map.removeLayer(layer);layer=L.tileLayer(data.visualization.tile_url,{opacity:.78,attribution:'AlphaEarth Foundations / Google DeepMind'}).addTo(map);if(marker)map.removeLayer(marker);marker=L.marker([lat,lng]).addTo(map).bindPopup(`<b>AlphaEarth ${year}</b><br>${lat.toFixed(5)}, ${lng.toFixed(5)}`).openPopup();map.setView([lat,lng],13);document.getElementById('map-label').textContent=`${year} • A01 / A16 / A09 composite`;status.textContent=`Loaded ${data.dimensions} embedding dimensions at ${data.resolution_m} m resolution.`;}catch(e){status.textContent=e.message||'Unable to load AlphaEarth data.';}finally{document.getElementById('analyze').disabled=false;}}
+document.getElementById('analyze').addEventListener('click',analyze);analyze();
+</script>
+<script src="api-config.js"></script>
+</body>
+</html>

@@ -28,6 +28,15 @@ const BHUMI_API_BASE_URL = window.FARMSCORE_API_URL;
         dashboardCss.href = "dashboard-light.css?v=2";
         dashboardCss.dataset.bhumiDashboardLight = "true";
         document.head.appendChild(dashboardCss);
+
+        // Keep the 20-parameter indicator grid readable after the light
+        // reference layout is applied. This is loaded LAST intentionally
+        // so its sizing/wrapping rules win over the reference dashboard CSS.
+        const indicatorFixCss = document.createElement("link");
+        indicatorFixCss.rel = "stylesheet";
+        indicatorFixCss.href = "dashboard-indicator-fix.css?v=1";
+        indicatorFixCss.dataset.bhumiIndicatorFix = "true";
+        document.head.appendChild(indicatorFixCss);
     }
 })();
 

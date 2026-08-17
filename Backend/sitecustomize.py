@@ -1,29 +1,42 @@
-"""Runtime compatibility patch for rolling cropping-history years.
-
-The application has multiple callers of enrichment_service.fetch_cropping_history().
-Keep the underlying satellite logic unchanged, but make the default three-year
-window use the three most recently completed crop years rather than the old
-hard-coded 2021-2023 window.
-
-For August 2026 this means 2023, 2024 and 2025. The current incomplete 2026
-Kharif season is deliberately excluded so the comparison remains complete and
-like-for-like.
-"""
-
-from datetime import datetime
+"""Matplotlib compatibility for ReportLab Color objects used by the PDF gauge."""
 
 try:
-    import enrichment_service as _enrichment
+    import matplotlib.colors as _mcolors
 
-    _original_fetch_cropping_history = _enrichment.fetch_cropping_history
+    _orig_to_rgba = _mcolors.to_rgba
+    _orig_to_rgba_array = _mcolors.to_rgba_array
 
-    def fetch_cropping_history_current(lat, lng, polygon=None, years=None):
-        if years is None:
-            current_year = datetime.utcnow().year
-            years = tuple(range(current_year - 3, current_year))
-        return _original_fetch_cropping_history(lat, lng, polygon, years=years)
+    def _is_reportlab_color(value):
+        cls = type(value)
+        return (
+            cls.__module__.startswith("reportlab.lib.colors")
+            and all(hasattr(value, attr) for attr in ("red", "green", "blue"))
+        )
 
-    _enrichment.fetch_cropping_history = fetch_cropping_history_current
+    def _to_rgba(value, alpha=None):
+        if _is_reportlab_color(value):
+            rgba = (
+                float(value.red),
+                float(value.green),
+                float(value.blue),
+                float(getattr(value, "alpha", 1.0)),
+            )
+            if alpha is not None:
+                rgba = (rgba[0], rgba[1], rgba[2], float(alpha))
+            return rgba
+        return _orig_to_rgba(value, alpha=alpha)
+
+    def _to_rgba_array(value, alpha=None):
+        if _is_reportlab_color(value):
+            return _orig_to_rgba_array(_to_rgba(value, alpha=alpha))
+        if isinstance(value, (list, tuple)):
+            value = [
+                _to_rgba(item, alpha=alpha) if _is_reportlab_color(item) else item
+                for item in value
+            ]
+        return _orig_to_rgba_array(value, alpha=alpha)
+
+    _mcolors.to_rgba = _to_rgba
+    _mcolors.to_rgba_array = _to_rgba_array
 except Exception:
-    # Never prevent application startup if the optional patch cannot load.
     pass

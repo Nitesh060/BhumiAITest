@@ -5,7 +5,43 @@ Static glossary content served by GET /glossary. Plain data — no GEE
 calls, so it's instant and always available even if Earth Engine is down.
 """
 
-GLOSSARY_TERMS = [
+
+class _GlossaryTerms(list):
+    """List-compatible glossary that also supports report lookups by term.
+
+    The frontend/API historically consumes GLOSSARY_TERMS as a list of
+    dictionaries. The PDF report also needs dictionary-style lookup by term.
+    Supporting both interfaces keeps the API response backwards compatible
+    while allowing the report generator to use ``term in terms`` and
+    ``terms[term]`` safely.
+    """
+
+    def __contains__(self, item):
+        if isinstance(item, str):
+            return any(isinstance(row, dict) and row.get("term") == item for row in self)
+        return super().__contains__(item)
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            for row in self:
+                if isinstance(row, dict) and row.get("term") == key:
+                    full_form = row.get("full_form")
+                    explanation = row.get("explanation") or ""
+                    return f"{full_form}. {explanation}" if full_form else explanation
+            raise KeyError(key)
+        return super().__getitem__(key)
+
+    def items(self):
+        """Provide dict-like iteration for report code while staying list-like."""
+        for row in self:
+            if isinstance(row, dict) and row.get("term"):
+                full_form = row.get("full_form")
+                explanation = row.get("explanation") or ""
+                meaning = f"{full_form}. {explanation}" if full_form else explanation
+                yield row["term"], meaning
+
+
+GLOSSARY_TERMS = _GlossaryTerms([
     {"term": "NDVI", "full_form": "Normalized Difference Vegetation Index",
      "explanation": "Measures vegetation greenness/health from satellite bands. Higher = healthier, denser plant growth."},
     {"term": "NDMI", "full_form": "Normalized Difference Moisture Index",
@@ -30,4 +66,4 @@ GLOSSARY_TERMS = [
      "explanation": "An inference (not a direct measurement) of whether a field is irrigated, based on whether it stays green through the dry season."},
     {"term": "Nighttime Lights Proxy", "full_form": None,
      "explanation": "Satellite-measured night light intensity, used as an indirect proxy for local economic activity — not an official income or prosperity index."},
-]
+])

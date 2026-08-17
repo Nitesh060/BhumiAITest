@@ -111,6 +111,68 @@ function renderCroppingHistory(data) {
     wrap.innerHTML = `<table class="report-table"><thead><tr><th>Year</th><th>Kharif NDVI</th><th>Kharif</th><th>Rabi NDVI</th><th>Rabi</th></tr></thead><tbody>${history.years.map(y => { const k = y.kharif || {}, r = y.rabi || {}; return `<tr><td>${escapeHTML(y.year)}</td><td>${k.ndvi != null ? escapeHTML(k.ndvi) : "—"}</td><td>${k.cropped ? "Cropped" : "Fallow / no signal"}</td><td>${r.ndvi != null ? escapeHTML(r.ndvi) : "—"}</td><td>${r.cropped ? "Cropped" : "Fallow / no signal"}</td></tr>`; }).join("")}</tbody></table><p class="empty-hint" style="margin-top:6px;">Season-level signal only — not crop-species identification.</p>`;
 }
 
+async function refreshLatestCroppingHistory(data) {
+    const coords = data.coordinates || {};
+    if (coords.lat == null || coords.lng == null) return;
+
+    // Use the latest 3 completed crop years. The current Kharif season is
+    // excluded while it is still in progress; for Aug 2026 this means
+    // 2023, 2024 and 2025 (Rabi 2025 = Nov 2025–Mar 2026).
+    const currentYear = new Date().getFullYear();
+    const firstYear = currentYear - 3;
+    const lastYear = currentYear;
+
+    try {
+        const res = await fetch(`${API_BASE_URL}/historical-timeline`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                lat: coords.lat,
+                lng: coords.lng,
+                polygon: data.polygon || null,
+                start_year: firstYear,
+                end_year: lastYear,
+            }),
+        });
+        if (!res.ok) return;
+        const payload = await res.json();
+        const points = payload.timeline || [];
+        const byYear = {};
+        points.forEach(p => {
+            if (p.ndvi == null) return;
+            if (!byYear[p.year]) byYear[p.year] = {};
+            byYear[p.year][p.quarter] = Number(p.ndvi);
+        });
+
+        const years = [];
+        for (let year = firstYear; year < lastYear; year++) {
+            const q = byYear[year] || {};
+            const next = byYear[year + 1] || {};
+            const kh = [q.Q2, q.Q3].filter(v => v != null);
+            const rb = [q.Q4, next.Q1].filter(v => v != null);
+            if (!kh.length && !rb.length) continue;
+            const kndvi = kh.length ? kh.reduce((a, b) => a + b, 0) / kh.length : null;
+            const rndvi = rb.length ? rb.reduce((a, b) => a + b, 0) / rb.length : null;
+            years.push({
+                year,
+                kharif: { ndvi: kndvi != null ? Number(kndvi.toFixed(4)) : null, cropped: kndvi != null && kndvi > 0.3 },
+                rabi: { ndvi: rndvi != null ? Number(rndvi.toFixed(4)) : null, cropped: rndvi != null && rndvi > 0.3 },
+            });
+        }
+
+        if (years.length) {
+            data.enrichment = data.enrichment || {};
+            data.enrichment.cropping_history = {
+                years,
+                note: "Season-level cropped/fallow signal from NDVI — not crop-species identification.",
+                source: "Sentinel-2 quarterly NDVI composites, latest 3 completed years",
+            };
+        }
+    } catch (err) {
+        console.warn("Latest cropping-history refresh skipped:", err);
+    }
+}
+
 function renderRegional(data) {
     const e = data.enrichment || {};
     const t = e.temperature_annual_range || {};
@@ -179,6 +241,11 @@ async function init() {
     document.getElementById("report-empty-state").style.display = "none";
     document.getElementById("report-content").style.display = "block";
     document.getElementById("report-subtitle").textContent = `${data.coordinates.lat}° N, ${data.coordinates.lng}° E · Score ${data.score}/900 (${data.grade})`;
+
+    // Refresh the fixed 2021–2023 history with the latest completed years
+    // before rendering the report. If the refresh fails, the cached history
+    // remains as a fallback.
+    await refreshLatestCroppingHistory(data);
 
     renderFarmDetails(data);
     renderScoreEvidence(data);

@@ -1,37 +1,24 @@
-"""
-pdf_report.py
-=============
-Generates a professional, SatSource-style PDF report from the exact data
-already computed by /calculate — same numbers shown on the dashboard, no
-new/fabricated values.
+"""Bhumi AI PDF report generator.
 
-Sections (mirrors the SatSource sample the user shared):
-  1. Cover header + Overall FarmScore gauge + factor breakdown
-  2. Farm Details (coordinates, land use, irrigation, cropping intensity)
-  3. Cropping History (3-year Kharif/Rabi table, if available)
-  4. Water Conditions (rainfall + groundwater trend charts)
-  5. Regional Parameters (soil, AEZ, temp range, prosperity, water body)
-  6. Score Bands / Colour Ranges legend
-  7. Glossary
-  8. Disclaimer
-
-Charts are rendered with matplotlib to PNG in a temp dir, then placed as
-Image flowables in a reportlab Platypus document — no external services.
+The report is intentionally a decision-report layout rather than a raw
+API dump. It only uses values already present in the /calculate payload
+(and optional crop-intelligence data attached by the frontend). No score
+or satellite value is recomputed here.
 """
 
 from __future__ import annotations
 
+import html
 import io
 import logging
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
 import requests
 
 from reportlab.lib import colors
@@ -39,7 +26,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak, HRFlowable
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image,
+    PageBreak, KeepTogether
 )
 
 from glossary import GLOSSARY_TERMS
@@ -47,457 +35,333 @@ from enrichment_service import fetch_farm_thumbnail_url
 
 logger = logging.getLogger(__name__)
 
-BRAND_BLUE = colors.HexColor("#1a56c4")
-BRAND_BLUE_DARK = colors.HexColor("#0f3a92")
-BRAND_GREEN = colors.HexColor("#2f9e63")
+BLUE = colors.HexColor("#1a56c4")
+BLUE_DARK = colors.HexColor("#0f3a92")
+GREEN = colors.HexColor("#2f9e63")
 GREY = colors.HexColor("#666666")
-LIGHT_GREY = colors.HexColor("#f2f2f2")
-PAGE_W, PAGE_H = A4
-HEADER_H = 22 * mm
-FOOTER_H = 14 * mm
-
-GRADE_COLOR = {
-    "Poor": "#d64545", "Fair": "#e8912d", "Average": "#e8c02d",
-    "Good": "#7fbf3f", "Excellent": "#2f9e63",
+LIGHT = colors.HexColor("#f2f2f2")
+BORDER = colors.HexColor("#d9d9d9")
+GRADE = {
+    "Poor": colors.HexColor("#d64545"),
+    "Fair": colors.HexColor("#e8912d"),
+    "Average": colors.HexColor("#e8c02d"),
+    "Good": colors.HexColor("#7fbf3f"),
+    "Excellent": colors.HexColor("#2f9e63"),
 }
 
 
 def _styles():
     ss = getSampleStyleSheet()
-    ss.add(ParagraphStyle("ReportTitle", parent=ss["Heading1"], fontSize=16, textColor=BRAND_BLUE, spaceAfter=2))
-    ss.add(ParagraphStyle("SectionHeading", parent=ss["Heading2"], fontSize=11.5, textColor=BRAND_BLUE_DARK,
-                           spaceBefore=16, spaceAfter=8, borderPadding=(0, 0, 4, 0)))
-    ss.add(ParagraphStyle("Small", parent=ss["Normal"], fontSize=8, textColor=GREY))
-    ss.add(ParagraphStyle("Caption", parent=ss["Normal"], fontSize=7.5, textColor=GREY, alignment=1, spaceBefore=3))
-    ss.add(ParagraphStyle("Body", parent=ss["Normal"], fontSize=9, leading=12))
+    ss.add(ParagraphStyle("Title2", parent=ss["Title"], fontSize=19, leading=23, textColor=BLUE_DARK, spaceAfter=5))
+    ss.add(ParagraphStyle("Subtitle2", parent=ss["Normal"], fontSize=8.5, leading=11, textColor=GREY))
+    ss.add(ParagraphStyle("Section2", parent=ss["Heading2"], fontSize=12, leading=15, textColor=BLUE_DARK, spaceBefore=13, spaceAfter=7))
+    ss.add(ParagraphStyle("Body2", parent=ss["Normal"], fontSize=8.7, leading=11.5, textColor=colors.HexColor("#222222")))
+    ss.add(ParagraphStyle("Small2", parent=ss["Normal"], fontSize=7.2, leading=9.2, textColor=GREY))
+    ss.add(ParagraphStyle("Tiny2", parent=ss["Normal"], fontSize=6.4, leading=8, textColor=GREY))
+    ss.add(ParagraphStyle("Cell", parent=ss["Normal"], fontSize=7, leading=8.5))
+    ss.add(ParagraphStyle("CellSmall", parent=ss["Normal"], fontSize=6.3, leading=7.5))
     return ss
 
 
-def _section_heading(text: str, ss) -> list:
-    """A section heading with a small green accent bar to its left,
-    instead of a plain bold line — closer to how the SatSource sample
-    breaks up sections."""
-    bar = Table([[""]], colWidths=[4], rowHeights=[13])
-    bar.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, 0), BRAND_GREEN),
-        ("LEFTPADDING", (0, 0), (0, 0), 0),
-        ("RIGHTPADDING", (0, 0), (0, 0), 0),
-        ("TOPPADDING", (0, 0), (0, 0), 0),
-        ("BOTTOMPADDING", (0, 0), (0, 0), 0),
-    ]))
-    heading = Table(
-        [[bar, Paragraph(text, ss["SectionHeading"])]],
-        colWidths=[4, 160 * mm],
-    )
-    heading.setStyle(TableStyle([
+def _esc(value: Any) -> str:
+    return html.escape("—" if value is None else str(value))
+
+
+def _p(value: Any, style):
+    return Paragraph(_esc(value), style)
+
+
+def _section(title: str, ss):
+    bar = Table([[""]], colWidths=[3.5 * mm], rowHeights=[6 * mm])
+    bar.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), GREEN), ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                             ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 0),
+                             ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
+    heading = Table([[bar, Paragraph(_esc(title), ss["Section2"])]], colWidths=[5 * mm, 155 * mm])
+    heading.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                                 ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                                 ("TOPPADDING", (0, 0), (-1, -1), 0),
+                                 ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                                 ("LEFTPADDING", (1, 0), (1, 0), 7)]))
+    return heading
+
+
+def _table(rows, widths, header=True):
+    t = Table(rows, colWidths=widths, repeatRows=1 if header else 0)
+    commands = [
+        ("GRID", (0, 0), (-1, -1), 0.45, BORDER),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (0, 0), 0),
-        ("RIGHTPADDING", (0, 0), (0, 0), 0),
-        ("TOPPADDING", (0, 0), (0, 0), 0),
-        ("BOTTOMPADDING", (0, 0), (0, 0), 0),
-        ("LEFTPADDING", (1, 0), (1, 0), 8),
-        ("TOPPADDING", (1, 0), (1, 0), 0),
-        ("BOTTOMPADDING", (1, 0), (1, 0), 0),
-    ]))
-    return [heading]
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]
+    if header:
+        commands += [("BACKGROUND", (0, 0), (-1, 0), BLUE), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, 0), 7)]
+        if len(rows) > 1:
+            commands.append(("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT]))
+    t.setStyle(TableStyle(commands))
+    return t
 
 
-# ---------------------------------------------------------------------------
-# Chart builders (matplotlib -> PNG bytes)
-# ---------------------------------------------------------------------------
-
-def _gauge_chart(score: int, tmpdir: str) -> str:
-    """Semi-circular gauge, 300-900 scale, colour bands from scoring.py."""
-    fig, ax = plt.subplots(figsize=(3.2, 2.0), subplot_kw={"projection": "polar"})
+def _gauge(score: int, tmp: str) -> str:
+    fig, ax = plt.subplots(figsize=(3.4, 1.8), subplot_kw={"projection": "polar"})
     bands = [(300, 421, "#d64545"), (421, 541, "#e8912d"), (541, 661, "#e8c02d"),
              (661, 781, "#7fbf3f"), (781, 901, "#2f9e63")]
-    span = 900 - 300
-
-    for lo, hi, color in bands:
-        theta1 = 3.14159 * (1 - (lo - 300) / span)
-        theta2 = 3.14159 * (1 - (hi - 300) / span)
-        ax.bar(x=(theta1 + theta2) / 2, height=0.3, width=(theta1 - theta2),
-               bottom=0.7, color=color, edgecolor="white")
-
-    needle_theta = 3.14159 * (1 - (score - 300) / span)
-    ax.plot([needle_theta, needle_theta], [0, 0.7], color="black", linewidth=2)
-    ax.set_theta_zero_location("W")
-    ax.set_theta_direction(-1)
-    ax.set_thetamin(0)
-    ax.set_thetamax(180)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-
-    path = str(Path(tmpdir) / "gauge.png")
+    span = 600
+    for lo, hi, col in bands:
+        a = 3.14159265 * (1 - (lo - 300) / span)
+        b = 3.14159265 * (1 - (hi - 300) / span)
+        ax.bar((a + b) / 2, 0.28, width=a - b, bottom=.72, color=col, edgecolor="white")
+    score = max(300, min(900, int(score or 300)))
+    theta = 3.14159265 * (1 - (score - 300) / span)
+    ax.plot([theta, theta], [0, .72], color="black", linewidth=2)
+    ax.set_theta_zero_location("W"); ax.set_theta_direction(-1); ax.set_thetamin(0); ax.set_thetamax(180)
+    ax.set_ylim(0, 1); ax.axis("off")
+    path = str(Path(tmp) / "score_gauge.png")
     fig.savefig(path, dpi=180, transparent=True, bbox_inches="tight")
     plt.close(fig)
     return path
 
 
-def _bar_chart(labels, values, avg_value, color, ylabel, title, tmpdir, fname):
-    fig, ax = plt.subplots(figsize=(6.0, 2.2))
-    ax.bar([str(l) for l in labels], values, color=color, width=0.6)
-    if avg_value is not None:
-        ax.axhline(avg_value, color="#1a56c4", linewidth=1.2)
-        ax.text(0, avg_value, f"{avg_value:.0f}", fontsize=7, va="bottom", color="#1a56c4")
-    ax.set_ylabel(ylabel, fontsize=8)
+def _bars(points, value_key, label_key, title, unit, tmp, filename):
+    points = [p for p in (points or []) if p.get(value_key) is not None]
+    if not points:
+        return None
+    labels = [str(p.get(label_key, "—")) for p in points]
+    values = [float(p[value_key]) for p in points]
+    fig, ax = plt.subplots(figsize=(6.1, 2.2))
+    ax.bar(labels, values, width=.62)
     ax.set_title(title, fontsize=9, loc="left")
-    ax.tick_params(labelsize=7)
-    for spine in ["top", "right"]:
-        ax.spines[spine].set_visible(False)
+    ax.set_ylabel(unit, fontsize=7)
+    ax.tick_params(labelsize=6.5)
+    for s in ("top", "right"):
+        ax.spines[s].set_visible(False)
     fig.tight_layout()
-
-    path = str(Path(tmpdir) / fname)
-    fig.savefig(path, dpi=180, bbox_inches="tight")
+    path = str(Path(tmp) / filename)
+    fig.savefig(path, dpi=170, bbox_inches="tight")
     plt.close(fig)
     return path
 
 
-# ---------------------------------------------------------------------------
-# Section builders
-# ---------------------------------------------------------------------------
-
-def _cover_section(data: Dict[str, Any], ss, tmpdir: str) -> list:
-    story = []
-    score = data.get("score", 0)
-    grade = data.get("grade", "—")
-
-    story += _section_heading("Overall Bhumi AI Score", ss)
-
-    gauge_path = _gauge_chart(score, tmpdir)
-    gauge_img = Image(gauge_path, width=75 * mm, height=47 * mm)
-
-    components = data.get("components", {})
-    param_style = ParagraphStyle("ParamCell", parent=ss["Small"], fontSize=7, textColor=colors.black, leading=8.5)
-    source_style = ParagraphStyle("SourceCell", parent=ss["Small"], fontSize=6.5, textColor=GREY, leading=8)
-
-    rows = [["Parameter", "Raw Value", "Sub-score", "Weight", "Source"]]
+def _score_section(data, ss, tmp):
+    score = int(data.get("score") or 300)
+    grade = data.get("grade") or "—"
+    components = data.get("components") or {}
+    rows = [["Parameter", "Observed", "Sub-score", "Weight", "Source"]]
     for key, c in components.items():
-        label = c.get("label") or key.replace("_", " ").upper()
-        rows.append([
-            Paragraph(label, param_style),
-            f"{c.get('raw_value')}{c.get('unit','')}",
-            f"{c.get('sub_score')}/100" if c.get("sub_score") is not None else "N/A",
-            f"{c.get('weight')}%",
-            Paragraph(c.get("source", "—"), source_style),
-        ])
-    factor_table = Table(rows, colWidths=[42*mm, 24*mm, 20*mm, 16*mm, 34*mm], repeatRows=1)
-    factor_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), BRAND_BLUE),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTSIZE", (0, 0), (-1, 0), 7.5),
-        ("FONTSIZE", (1, 1), (3, -1), 7.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT_GREY]),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-    ]))
-
-    score_label = Paragraph(
-        f'<font size="20" color="{GRADE_COLOR.get(grade, "#000000")}"><b>{score}</b></font>'
-        f'<br/><font size="11" color="{GRADE_COLOR.get(grade, "#000000")}">{grade}</font>',
-        ss["Body"])
-
-    header_table = Table([[gauge_img, score_label]], colWidths=[85*mm, 30*mm])
-    header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
-
-    story.append(header_table)
-    story.append(Spacer(1, 6))
-    story.append(factor_table)
-    return story
+        rows.append([_p(c.get("label") or key, ss["Cell"]),
+                     _p(f"{c.get('raw_value')}{c.get('unit', '')}", ss["Cell"]),
+                     _p(f"{c.get('sub_score')}/100" if c.get("sub_score") is not None else "N/A", ss["Cell"]),
+                     _p(f"{c.get('weight', 0)}%", ss["Cell"]),
+                     _p(c.get("source") or "—", ss["CellSmall"])])
+    gauge = Image(_gauge(score, tmp), width=76 * mm, height=40 * mm)
+    grade_col = GRADE.get(grade, colors.black)
+    summary = Table([[gauge, Paragraph(f'<font size="27" color="{grade_col.hexval()}"><b>{score}</b></font><br/><font size="12" color="{grade_col.hexval()}"><b>{_esc(grade)}</b></font><br/><font size="7">FarmScore scale: 300–900</font>', ss["Body2"])]], colWidths=[85 * mm, 45 * mm])
+    summary.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+    return [_section("1. Overall FarmScore & Parameter Breakdown", ss), summary, Spacer(1, 5), _table(rows, [47*mm, 28*mm, 23*mm, 20*mm, 38*mm])]
 
 
-def _farm_location_section(data: Dict[str, Any], ss, tmpdir: str) -> list:
-    """Real Sentinel-2 true-colour image of the farm, not a static map
-    screenshot — same satellite source used for the NDVI/NDMI numbers
-    elsewhere in this report, so what you see visually matches what was
-    measured.
-    """
-    coords = data.get("coordinates", {})
-    lat, lng = coords.get("lat"), coords.get("lng")
-    if lat is None or lng is None:
-        return []
-
-    story = _section_heading("Farm Location", ss)
-
+def _location_section(data, ss, tmp):
+    coords = data.get("coordinates") or {}
+    story = [_section("2. Farm Location & Executive Snapshot", ss)]
+    e = data.get("enrichment") or {}
+    irrigation = e.get("irrigation") or {}
+    soil = e.get("soil_type") or {}
+    intensity = e.get("cropping_intensity") or {}
+    climate = data.get("climate_risk") or {}
+    crops = data.get("recommended_crops") or {}
+    primary = crops.get("primary") or {}
+    rows = [
+        ["Coordinates", f"{coords.get('lat')}° N, {coords.get('lng')}° E"],
+        ["Land use", "Agricultural"],
+        ["Soil", soil.get("label") or "—"],
+        ["Irrigation signal", "Likely irrigated" if irrigation.get("likely_irrigated") else ("Likely rainfed" if irrigation.get("likely_irrigated") is False else "—")],
+        ["Cropping intensity", intensity.get("label") or "—"],
+        ["Top recommended crop", f"{primary.get('crop', '—')} ({primary.get('score', '—')}%)"],
+        ["Climate risk", climate.get("level") or "—"],
+    ]
+    story.append(_table([["Field", "Value"]] + [[_p(a, ss["Cell"]), _p(b, ss["Cell"])] for a, b in rows], [50*mm, 106*mm]))
+    story.append(Spacer(1, 5))
     try:
-        polygon = data.get("farm_polygon") or data.get("polygon")
-        thumb_url = fetch_farm_thumbnail_url(lat, lng, polygon)
-        if not thumb_url:
-            raise ValueError("No thumbnail URL returned")
-
-        resp = requests.get(thumb_url, timeout=20)
-        resp.raise_for_status()
-
-        img_path = str(Path(tmpdir) / "farm_photo.png")
-        with open(img_path, "wb") as f:
-            f.write(resp.content)
-
-        img = Image(img_path, width=90 * mm, height=90 * mm)
-        story.append(img)
-        story.append(Paragraph(
-            f"Sentinel-2 true-colour composite, ~700 m around {lat}° N, {lng}° E. "
-            f"Cloud-free scenes, 2023–2024.", ss["Caption"]))
+        lat, lng = coords.get("lat"), coords.get("lng")
+        if lat is not None and lng is not None:
+            url = fetch_farm_thumbnail_url(lat, lng, data.get("farm_polygon") or data.get("polygon"))
+            if url:
+                r = requests.get(url, timeout=15); r.raise_for_status()
+                path = str(Path(tmp) / "farm_satellite.png")
+                Path(path).write_bytes(r.content)
+                story += [Image(path, width=92*mm, height=72*mm), Paragraph("Satellite true-colour farm context. Image is provided for visual context; scoring uses the measured satellite-derived parameters above.", ss["Small2"])]
     except Exception:
-        logger.exception("Could not embed farm thumbnail in PDF")
-        story.append(Paragraph(
-            "Satellite image unavailable for this report (imagery service did not respond in time).",
-            ss["Small"]))
-
+        logger.info("Farm thumbnail unavailable for PDF", exc_info=True)
     return story
 
 
-def _farm_details_section(data: Dict[str, Any], ss) -> list:
-    story = _section_heading("Farm Details", ss)
-    coords = data.get("coordinates", {})
-    enrichment = data.get("enrichment", {}) or {}
-    irrigation = enrichment.get("irrigation") or {}
-    cropping_intensity = enrichment.get("cropping_intensity") or {}
-    soil = enrichment.get("soil_type") or {}
-    aez = enrichment.get("agro_ecological_zone") or {}
-    yield_pred = data.get("yield_prediction")
-
+def _crop_section(data, ss):
+    ci = data.get("crop_intelligence") or {}
+    ident = ci.get("identification") or {}
+    stage = ci.get("growth_stage") or {}
+    sh = ci.get("sowing_harvest_prediction") or {}
+    rotation = ci.get("crop_rotation") or {}
+    calendar = ci.get("crop_calendar") or {}
+    story = [_section("3. Crop Intelligence", ss)]
+    if not ci:
+        story.append(Paragraph("Crop Intelligence was not attached to this report payload. Re-open the Extended Report so the page can retrieve the latest crop-intelligence result before downloading the PDF.", ss["Body2"]))
+        return story
     rows = [
-        ["Farm Centroid", f"{coords.get('lat')}° N, {coords.get('lng')}° E"],
-        ["Land Use Type", "Agricultural"],
-        ["Irrigation Condition", "Irrigated" if irrigation.get("likely_irrigated") else
-         ("Not Irrigated" if irrigation.get("likely_irrigated") is False else "—")],
-        ["Cropping Intensity", cropping_intensity.get("label", "—")],
-        ["Soil Type", soil.get("label", "—")],
-        ["Agro-Ecological Zone", aez.get("zone", "—")],
+        ["Likely crop", ident.get("identified_crop") or "—"],
+        ["Confidence", ident.get("confidence") or "—"],
+        ["Peak NDVI", f"{ident.get('peak_ndvi')} (month {ident.get('peak_ndvi_month')})" if ident.get("peak_ndvi") is not None else "—"],
+        ["Flood / paddy signature", "Detected" if ident.get("flood_signature_detected") else "Not detected"],
+        ["Growth stage", stage.get("stage") or "—"],
+        ["Current NDVI / peak", f"{stage.get('current_ndvi')} / {stage.get('peak_ndvi')}" if stage.get("current_ndvi") is not None else "—"],
+        ["Estimated sowing", sh.get("sowing_estimate_month") or "—"],
+        ["Estimated harvest", sh.get("harvest_estimate_month") or "—"],
+        ["Prediction source", sh.get("source") or "—"],
     ]
-    if yield_pred:
-        total = f" (~{yield_pred['estimated_total_yield_quintal']} quintal on {yield_pred['area_ha']} ha)" if yield_pred.get("estimated_total_yield_quintal") is not None else ""
-        rows.append([f"Est. Yield ({yield_pred['crop']})", f"{yield_pred['estimated_yield_kg_per_ha']} kg/ha{total}"])
-
-    t = Table(rows, colWidths=[50*mm, 100*mm])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, -1), LIGHT_GREY),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-    ]))
-    story.append(t)
-    if yield_pred:
-        story.append(Paragraph(
-            "Yield is a formula-based estimate (NDVI-proportional to national average yield) — not a trained ML prediction or a measured harvest.",
-            ss["Small"]))
+    story.append(_table([["Indicator", "Result"]] + [[_p(a, ss["Cell"]), _p(b, ss["Cell"])] for a, b in rows], [55*mm, 101*mm]))
+    if ident.get("method"):
+        story.append(Paragraph("Method: " + _esc(ident["method"]), ss["Small2"]))
+    if ident.get("note"):
+        story.append(Paragraph(_esc(ident["note"]), ss["Small2"]))
+    if rotation.get("years"):
+        story += [Spacer(1, 5), Paragraph("Crop Rotation (3-year)", ss["Heading3"])]
+        rr = [["Year", "Kharif", "Rabi"]] + [[_p(y.get("year"), ss["Cell"]), _p(y.get("kharif"), ss["Cell"]), _p(y.get("rabi"), ss["Cell"])] for y in rotation["years"]]
+        story.append(_table(rr, [30*mm, 60*mm, 60*mm]))
+        if rotation.get("summary"): story.append(Paragraph(_esc(rotation["summary"]), ss["Small2"]))
+    if calendar:
+        story += [Spacer(1, 5), Paragraph("Crop Calendar Reference", ss["Heading3"])]
+        cr = [["Season", "Typical sowing", "Typical harvest", "Duration"]]
+        for season, info in calendar.items():
+            cr.append([_p(season, ss["Cell"]), _p(info.get("sow"), ss["Cell"]), _p(info.get("harvest"), ss["Cell"]), _p(f"{info.get('duration_days')} days", ss["Cell"])])
+        story.append(_table(cr, [30*mm, 47*mm, 47*mm, 32*mm]))
     return story
 
 
-def _cropping_history_section(data: Dict[str, Any], ss) -> list:
-    enrichment = data.get("enrichment", {}) or {}
-    history = enrichment.get("cropping_history")
-    if not history or not history.get("years"):
-        return []
-
-    story = _section_heading("Cropping History (Satellite-derived, 3-year)", ss)
-    rows = [["Year", "Kharif NDVI", "Kharif Status", "Rabi NDVI", "Rabi Status"]]
-    for y in history["years"]:
-        k, r = y.get("kharif", {}), y.get("rabi", {})
-        rows.append([
-            str(y.get("year")),
-            f"{k.get('ndvi')}" if k.get("ndvi") is not None else "—",
-            "Cropped" if k.get("cropped") else "Fallow/No signal",
-            f"{r.get('ndvi')}" if r.get("ndvi") is not None else "—",
-            "Cropped" if r.get("cropped") else "Fallow/No signal",
-        ])
-    t = Table(rows, colWidths=[18*mm, 28*mm, 34*mm, 28*mm, 34*mm])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), BRAND_BLUE),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT_GREY]),
-    ]))
-    story.append(t)
-    story.append(Paragraph(
-        "Note: this reflects satellite-detected vegetation presence per season, "
-        "not confirmed crop-species identification.", ss["Small"]))
-    return story
-
-
-def _water_conditions_section(data: Dict[str, Any], ss, tmpdir: str) -> list:
-    story = _section_heading("Water Conditions", ss)
-
-    rainfall_monthly = data.get("rainfall_monthly") or []
-    gw_trend = data.get("groundwater_trend") or []
-
-    charts_added = False
-    if rainfall_monthly:
-        labels = [m["month"] for m in rainfall_monthly]
-        values = [m.get("mm_per_day") or 0 for m in rainfall_monthly]
-        avg = sum(values) / len(values) if values else None
-        path = _bar_chart(labels, values, avg, "#7fb2e8", "mm/day", "Rainfall (growing-season months)", tmpdir, "rain.png")
-        story.append(Image(path, width=150*mm, height=55*mm))
-        charts_added = True
-
-    if gw_trend:
-        labels = [t["year"] for t in gw_trend]
-        values = [t.get("groundwater") or 0 for t in gw_trend]
-        avg = sum(values) / len(values) if values else None
-        path = _bar_chart(labels, values, avg, "#7fa89e", "kg/m²", "Groundwater Trend (yearly)", tmpdir, "gw.png")
-        story.append(Image(path, width=150*mm, height=55*mm))
-        charts_added = True
-
-    if not charts_added:
-        story.append(Paragraph("No trend data available for this location.", ss["Small"]))
-    return story
-
-
-def _regional_parameters_section(data: Dict[str, Any], ss) -> list:
-    enrichment = data.get("enrichment", {}) or {}
-    story = _section_heading("Regional Parameters", ss)
-
-    temp_range = enrichment.get("temperature_annual_range") or {}
-    prosperity = enrichment.get("regional_prosperity") or {}
-    water_body = enrichment.get("nearest_water_body") or {}
-    land_cover = enrichment.get("adjacent_land_cover") or {}
-    topo = enrichment.get("topography") or {}
-    pop = enrichment.get("village_population") or {}
-    drought = enrichment.get("drought_instances") or {}
-
-    top_land = ", ".join(f"{b['class']} {b['percent']}%" for b in (land_cover.get("breakdown") or [])[:3]) or "—"
-
-    rows = [
-        ["Annual Temperature Range",
-         f"{temp_range.get('min_c','—')}°C – {temp_range.get('max_c','—')}°C" if temp_range.get("min_c") is not None else "—"],
-        ["Water Body within 2 km", "Present" if water_body.get("water_present") else "Not detected"],
-        ["Regional Prosperity (proxy)", prosperity.get("tier", "—")],
-        ["Adjacent Land (top classes)", top_land],
-        ["Topography", f"{topo.get('terrain','—')} ({topo.get('elevation_m','—')}m, {topo.get('slope_degrees','—')}° slope)" if topo.get("terrain") else "—"],
-        ["Population (nearby, proxy)", f"~{pop.get('estimated_population'):,} within {pop.get('radius_m')}m" if pop.get("estimated_population") is not None else "—"],
-        ["Drought Years (district-scale, since 2000)",
-         ", ".join(str(y) for y in drought.get("drought_years", [])) or ("None detected" if drought.get("drought_years") is not None else "—")],
+def _farm_profile_section(data, ss):
+    e = data.get("enrichment") or {}
+    yp = data.get("yield_prediction") or {}
+    rows = [["Attribute", "Value"]]
+    values = [
+        ("Agro-Ecological Zone", (e.get("agro_ecological_zone") or {}).get("zone")),
+        ("Adjacent land cover", ", ".join(f"{x.get('class')} {x.get('percent')}%" for x in ((e.get("adjacent_land_cover") or {}).get("breakdown") or [])[:3])),
+        ("Estimated yield", f"{yp.get('estimated_yield_kg_per_ha')} kg/ha" if yp.get("estimated_yield_kg_per_ha") is not None else None),
+        ("Estimated total yield", f"{yp.get('estimated_total_yield_quintal')} quintal on {yp.get('area_ha')} ha" if yp.get('estimated_total_yield_quintal') is not None else None),
+        ("Yield model", "Formula proxy; not measured / not trained ML" if yp else None),
     ]
-    t = Table(rows, colWidths=[55*mm, 95*mm])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, -1), LIGHT_GREY),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
-        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-    ]))
-    story.append(t)
-    story.append(Paragraph(
-        "Regional Prosperity and Population are satellite-derived proxies, not official government indices/Census figures. "
-        "Drought years are approximated from CHIRPS rainfall (<75% of local long-term average), not an official drought declaration.",
-        ss["Small"]))
+    for a, b in values: rows.append([_p(a, ss["Cell"]), _p(b or "—", ss["Cell"])])
+    return [_section("4. Farm Profile & Yield Context", ss), _table(rows, [55*mm, 101*mm])]
+
+
+def _cropping_history(data, ss):
+    hist = (data.get("enrichment") or {}).get("cropping_history") or {}
+    if not hist.get("years"): return []
+    rows = [["Year", "Kharif NDVI", "Kharif", "Rabi NDVI", "Rabi"]]
+    for y in hist["years"]:
+        k, r = y.get("kharif") or {}, y.get("rabi") or {}
+        rows.append([_p(y.get("year"), ss["Cell"]), _p(k.get("ndvi") if k.get("ndvi") is not None else "—", ss["Cell"]), _p("Cropped" if k.get("cropped") else "Fallow / no signal", ss["Cell"]), _p(r.get("ndvi") if r.get("ndvi") is not None else "—", ss["Cell"]), _p("Cropped" if r.get("cropped") else "Fallow / no signal", ss["Cell"])])
+    return [_section("5. Cropping History (Satellite-derived, 3-year)", ss), _table(rows, [20*mm, 28*mm, 43*mm, 28*mm, 43*mm]), Paragraph("Season-level cropped/fallow signal from NDVI; it does not identify crop species.", ss["Small2"])]
+
+
+def _water_section(data, ss, tmp):
+    story = [_section("6. Water Conditions", ss)]
+    rain = data.get("rainfall_monthly") or []
+    gw = data.get("groundwater_trend") or []
+    p = _bars(rain, "mm_per_day", "month", "Rainfall profile", "mm/day", tmp, "rainfall.png")
+    if p: story.append(Image(p, width=155*mm, height=55*mm))
+    g = _bars(gw, "groundwater", "year", "Groundwater trend", "kg/m²", tmp, "groundwater.png")
+    if g: story.append(Image(g, width=155*mm, height=55*mm))
+    if not p and not g: story.append(Paragraph("No water trend series was available in the report payload.", ss["Body2"]))
     return story
 
 
-def _colour_ranges_section(ss) -> list:
-    story = _section_heading("Score Bands", ss)
-    rows = [
-        ["Category", "Interval (300-900 scale)"],
-        ["Poor", "300 – 420"],
-        ["Fair", "421 – 540"],
-        ["Average", "541 – 660"],
-        ["Good", "661 – 780"],
-        ["Excellent", "781 – 900"],
+def _regional_section(data, ss):
+    e = data.get("enrichment") or {}
+    t = e.get("temperature_annual_range") or {}
+    p = e.get("regional_prosperity") or {}
+    w = e.get("nearest_water_body") or {}
+    topo = e.get("topography") or {}
+    pop = e.get("village_population") or {}
+    drought = e.get("drought_instances") or {}
+    rows = [["Regional parameter", "Observed / proxy"]]
+    values = [
+        ("Annual temperature range", f"{t.get('min_c')}°C – {t.get('max_c')}°C (mean {t.get('mean_c')}°C)" if t.get("min_c") is not None else None),
+        ("Regional prosperity", p.get("tier")),
+        ("Nearest water body", "Present" if w.get("water_present") else ("Not detected" if w.get("water_present") is False else None)),
+        ("Topography", f"{topo.get('terrain')} · {topo.get('elevation_m')} m · slope {topo.get('slope_degrees')}°" if topo.get("terrain") else None),
+        ("Nearby population proxy", f"~{pop.get('estimated_population')} within {pop.get('radius_m')} m" if pop.get("estimated_population") is not None else None),
+        ("Drought years", ", ".join(map(str, drought.get("drought_years", []))) if drought.get("drought_years") else "None detected"),
     ]
-    t = Table(rows, colWidths=[40*mm, 60*mm])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), BRAND_BLUE),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#dddddd")),
-    ]))
-    story.append(t)
-    return story
+    for a, b in values: rows.append([_p(a, ss["Cell"]), _p(b or "—", ss["Cell"])])
+    return [_section("7. Regional Parameters", ss), _table(rows, [55*mm, 101*mm])]
 
 
-def _glossary_section(ss) -> list:
-    story = _section_heading("Glossary", ss)
-    for term in GLOSSARY_TERMS:
-        name = term["term"] + (f" ({term['full_form']})" if term.get("full_form") else "")
-        story.append(Paragraph(f"<b>{name}</b> — {term['explanation']}", ss["Small"]))
-        story.append(Spacer(1, 3))
-    return story
+def _risk_sources(data, ss):
+    climate = data.get("climate_risk") or {}
+    components = data.get("components") or {}
+    sources = sorted({c.get("source") for c in components.values() if c.get("source")})
+    rows = [["Decision context", "Result"],
+            [_p("Climate risk", ss["Cell"]), _p(climate.get("level") or "—", ss["Cell"])]]
+    flags = climate.get("flags") or []
+    if flags: rows.append([_p("Risk flags", ss["Cell"]), _p("; ".join(flags), ss["Cell"])])
+    rows.append([_p("Satellite / data sources", ss["Cell"]), _p("; ".join(sources) or "—", ss["Cell"])])
+    rows.append([_p("Score interpretation", ss["Cell"]), _p("Suitability / condition index. It is not a validated yield model or standalone credit decision.", ss["Cell"])])
+    return [_section("8. Risk Context, Data Provenance & Decision Notes", ss), _table(rows, [55*mm, 101*mm])]
 
 
-def _disclaimer_section(ss) -> list:
-    text = (
-        "Disclaimer: This is a system-generated report using satellite remote sensing and "
-        "publicly available datasets (Sentinel-2, CHIRPS, MODIS, GLDAS, ESA WorldCover, "
-        "OpenLandMap, JRC Global Surface Water, VIIRS). Values are subject to the limitations "
-        "of these technologies and are indicative, not certified ground-truth measurements. "
-        "This report is intended for internal evaluation support only and should not be the "
-        "sole basis for a lending decision."
-    )
-    return [Spacer(1, 10), HRFlowable(width="100%", color=colors.HexColor("#dddddd")),
-            Spacer(1, 6), Paragraph(text, ParagraphStyle("Disclaimer", fontSize=7.5, textColor=GREY, leading=10))]
+def _bands(ss):
+    rows = [["Score", "Band"], ["781–900", "Excellent"], ["661–780", "Good"], ["541–660", "Average"], ["421–540", "Fair"], ["300–420", "Poor"]]
+    return [_section("9. Score Bands", ss), _table(rows, [55*mm, 101*mm]), Paragraph("The score is reported on the Bhumi AI 300–900 scale used by the application.", ss["Small2"])]
 
 
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
+def _glossary(ss):
+    rows = [["Term", "Meaning"]]
+    for term, definition in list(GLOSSARY_TERMS.items())[:30]:
+        rows.append([_p(term, ss["Cell"]), _p(definition, ss["CellSmall"])])
+    return [_section("10. Glossary", ss), _table(rows, [45*mm, 111*mm])]
 
-def _draw_header_footer(canvas, doc, data: Dict[str, Any]):
-    coords = data.get("coordinates", {})
+
+def _footer(canvas, doc):
     canvas.saveState()
-
-    # ---- Header band ----
-    canvas.setFillColor(BRAND_BLUE_DARK)
-    canvas.rect(0, PAGE_H - HEADER_H, PAGE_W, HEADER_H, fill=1, stroke=0)
-
-    canvas.setFillColor(colors.white)
-    canvas.setFont("Helvetica-Bold", 14)
-    canvas.drawString(16 * mm, PAGE_H - 14 * mm, "\U0001F331 Bhumi AI Report")
-
-    canvas.setFont("Helvetica", 8)
-    ref_text = f"{coords.get('lat', '—')}, {coords.get('lng', '—')}"
-    date_text = datetime.now().strftime("%Y-%m-%d")
-    canvas.drawRightString(PAGE_W - 16 * mm, PAGE_H - 9 * mm, f"Reference: {ref_text}")
-    canvas.drawRightString(PAGE_W - 16 * mm, PAGE_H - 14 * mm, f"Generated On: {date_text}")
-
-    # ---- Footer band ----
-    canvas.setFillColor(LIGHT_GREY)
-    canvas.rect(0, 0, PAGE_W, FOOTER_H, fill=1, stroke=0)
+    canvas.setFont("Helvetica", 6.8)
     canvas.setFillColor(GREY)
-    canvas.setFont("Helvetica", 7)
-    canvas.drawString(16 * mm, 6 * mm, "Generated by Bhumi AI \u2014 satellite remote-sensing data, for internal evaluation support.")
-    canvas.drawRightString(PAGE_W - 16 * mm, 6 * mm, f"Page {doc.page}")
-
+    canvas.drawString(18 * mm, 9 * mm, "Bhumi AI · Satellite-powered farm intelligence")
+    canvas.drawRightString(192 * mm, 9 * mm, f"Page {doc.page}")
     canvas.restoreState()
 
 
 def generate_pdf_report(data: Dict[str, Any]) -> bytes:
-    """Build the full PDF report from a /calculate response dict.
-    Returns raw PDF bytes.
-    """
+    """Generate the report from an existing /calculate result payload."""
+    if not data or "score" not in data:
+        raise ValueError("Report payload must include score")
+
     ss = _styles()
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        topMargin=HEADER_H + 6 * mm, bottomMargin=FOOTER_H + 6 * mm,
-        leftMargin=16 * mm, rightMargin=16 * mm,
-    )
-
-    def _on_page(canvas, doc_):
-        _draw_header_footer(canvas, doc_, data)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
+    buffer = io.BytesIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=18*mm, leftMargin=18*mm,
+                                topMargin=16*mm, bottomMargin=16*mm, title="Bhumi AI Farm Intelligence Report")
         story = []
-        story += _cover_section(data, ss, tmpdir)
-        story += _farm_location_section(data, ss, tmpdir)
-        story += _farm_details_section(data, ss)
-
-        history_story = _cropping_history_section(data, ss)
-        if history_story:
-            story.append(PageBreak())
-            story += history_story
-
+        coords = data.get("coordinates") or {}
+        story += [Paragraph("Bhumi AI", ss["Title2"]),
+                  Paragraph("Extended Farm Intelligence Report", ss["Subtitle2"]),
+                  Spacer(1, 4),
+                  Paragraph(f"Generated: {datetime.now().strftime('%d %b %Y, %H:%M')} · Location: {_esc(coords.get('lat'))}° N, {_esc(coords.get('lng'))}° E", ss["Small2"]),
+                  Spacer(1, 8)]
+        story += _score_section(data, ss, tmp)
+        story += _location_section(data, ss, tmp)
+        story += _crop_section(data, ss)
+        story += _farm_profile_section(data, ss)
+        story += _cropping_history(data, ss)
+        story += _water_section(data, ss, tmp)
+        story += _regional_section(data, ss)
+        story += _risk_sources(data, ss)
+        story += _bands(ss)
         story.append(PageBreak())
-        story += _water_conditions_section(data, ss, tmpdir)
-        story += _regional_parameters_section(data, ss)
-
-        story.append(PageBreak())
-        story += _colour_ranges_section(ss)
-        story += _glossary_section(ss)
-        story += _disclaimer_section(ss)
-
-        doc.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
-
-    return buf.getvalue()
+        story += _glossary(ss)
+        story += [_section("11. Disclaimer", ss),
+                  Paragraph("Bhumi AI uses satellite-derived indicators, environmental datasets and transparent heuristic rules. Crop identification, yield estimates and regional proxies are indicative unless explicitly validated with field observations or labelled ground-truth data. The FarmScore is a suitability/condition index and should not be treated as a standalone lending, insurance, agronomic or legal decision. Field verification and applicable institutional policy remain necessary.", ss["Body2"]),
+                  Spacer(1, 8),
+                  Paragraph("Data note: missing satellite observations are not silently treated as zero; the scoring service redistributes available weights. Thresholds are provisional and should be calibrated against local ground-truth outcomes before production credit decisions.", ss["Small2"])]
+        doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    return buffer.getvalue()

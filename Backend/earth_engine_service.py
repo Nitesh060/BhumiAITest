@@ -99,6 +99,19 @@ def initialise_earth_engine() -> None:
     """Initialise Earth Engine with service-account credentials (idempotent).
 
     Thread-safe — multiple concurrent Flask requests will not race.
+
+    Credential resolution order (first one found wins):
+      1. ``GOOGLE_CREDENTIALS`` — the full service-account JSON as a string.
+      2. ``GEE_SERVICE_ACCOUNT`` + ``GEE_PRIVATE_KEY`` (+ optional
+         ``GEE_PROJECT_ID``) — the three separate variables documented in
+         .env.example. These used to be silently ignored (this function only
+         ever read GOOGLE_CREDENTIALS / GEE_KEY_FILE / a local key file), so
+         following .env.example's own instructions still made Earth Engine
+         init fail on every request in a fresh deployment. Building the
+         credentials JSON from these three now makes that documented path
+         actually work.
+      3. ``GEE_KEY_FILE`` — path to a service-account JSON key file.
+      4. ``credentials/gee-service-account.json`` relative to this file.
     """
     global _ee_initialised
     if _ee_initialised:
@@ -117,6 +130,22 @@ def initialise_earth_engine() -> None:
                 mode="w", suffix=".json", delete=False, encoding="utf-8"
             ) as tmp:
                 tmp.write(credentials_json)
+                key_path = tmp.name
+        elif os.getenv("GEE_SERVICE_ACCOUNT") and os.getenv("GEE_PRIVATE_KEY"):
+            import tempfile
+
+            service_account_email = os.getenv("GEE_SERVICE_ACCOUNT")
+            private_key = os.getenv("GEE_PRIVATE_KEY").replace("\\n", "\n")
+            key_data = {
+                "type": "service_account",
+                "client_email": service_account_email,
+                "private_key": private_key,
+                "project_id": os.getenv("GEE_PROJECT_ID"),
+            }
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False, encoding="utf-8"
+            ) as tmp:
+                json.dump(key_data, tmp)
                 key_path = tmp.name
         else:
             key_path = _resolve_credentials_path()

@@ -292,7 +292,7 @@ def fetch_farm_data(lat: float, lng: float, polygon: Optional[dict] = None) -> D
         cached = _coord_cache.get(cache_key)
     if cached:
         return cached.copy()
-    with ThreadPoolExecutor(max_workers=7) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         f_idx = pool.submit(_fetch_s2_indices, lat, lng, polygon)
         f_rain = pool.submit(_fetch_rainfall, lat, lng, polygon)
         f_month = pool.submit(_fetch_rainfall_monthly, lat, lng, polygon)

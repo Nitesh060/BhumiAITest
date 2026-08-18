@@ -26,6 +26,27 @@ DEFAULT_WEIGHTS = {
     "lst": 10.0,
 }
 
+# Canonical 300-900 grade bands. This is the single place grade cut-offs are
+# defined — scoring.py delegates to _assign_grade() below instead of keeping
+# its own copy, so the FarmScore ("/calculate", PDF, WhatsApp) and the raw
+# comprehensive score ("/comprehensive-score") endpoints can never disagree
+# on the grade for the same underlying score again.
+DEFAULT_GRADE = "Poor"
+GRADE_BANDS = [
+    (781, "Excellent"),
+    (661, "Good"),
+    (541, "Average"),
+    (421, "Fair"),
+]
+
+
+def _assign_grade(scaled_score: float) -> str:
+    for threshold, label in GRADE_BANDS:
+        if scaled_score >= threshold:
+            return label
+    return DEFAULT_GRADE
+
+
 PARAMETER_LABELS = {
     "ndvi": "NDVI (Vegetation Health)", "evi": "EVI (Enhanced Vegetation Index)",
     "savi": "SAVI (Soil Adjusted Vegetation Index)", "msavi": "MSAVI (Modified SAVI)",
@@ -120,16 +141,13 @@ def compute_comprehensive_score(raw_values: Dict[str, Optional[float]], weights:
 
     score = round(weighted_sum, 2)
     scaled = round(300 + (score / 100) * 600)
-    if score >= 80:
-        grade = "Excellent"
-    elif score >= 65:
-        grade = "Good"
-    elif score >= 50:
-        grade = "Average"
-    elif score >= 35:
-        grade = "Fair"
-    else:
-        grade = "Poor"
+    # Grade is derived from the scaled 300-900 value using the single
+    # canonical band table (_assign_grade / GRADE_BANDS above), not from
+    # separate 0-100 cut-offs — that used to drift out of sync with the
+    # 300-900 bands shown in the PDF's "Colour Ranges" table and used by
+    # scoring.py, so the same farm could get "Average" from this function
+    # and "Good" from calculate_score() for the same score.
+    grade = _assign_grade(scaled)
 
     used = sum(1 for c in components.values() if c["sub_score"] is not None)
     confidence = "high" if used >= 15 else "moderate" if used >= 10 else "low"

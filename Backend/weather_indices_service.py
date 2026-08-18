@@ -1,8 +1,8 @@
 """Weather indices used by the FarmScore comprehensive score.
 
-SPEI is explicitly a Thornthwaite temperature-only proxy, not the full
-standard SPEI. Climate windows use completed seasons to avoid current-data
-publication lag producing false nulls.
+Climate indices use the same CHIRPS v3 rainfall source and completed Jun-Oct
+season as the main rainfall metric. SPEI remains explicitly a simplified
+Thornthwaite temperature-only water-balance proxy, not the full standard SPEI.
 """
 from __future__ import annotations
 
@@ -17,15 +17,11 @@ from earth_engine_service import _get_region, _reduce_mean
 
 logger = logging.getLogger(__name__)
 GDD_BASE_TEMP_C = 10.0
+CHIRPS_COLLECTION = "UCSB-CHC/CHIRPS/V3/DAILY_SAT"
 
 
 def _weather_region(lat: float, lng: float, polygon: Optional[dict]) -> ee.Geometry:
-    """Use a local buffer for coarse climate grids (5-11 km pixels).
-
-    The parcel polygon is still used by high-resolution satellite metrics,
-    but ERA5/CHIRPS climate values represent a grid cell and are more robust
-    when reduced over a small surrounding area.
-    """
+    """Use a local buffer for coarse climate grids (5-11 km pixels)."""
     return _get_region(lat, lng, polygon).buffer(5000)
 
 
@@ -49,12 +45,8 @@ def fetch_solar_radiation(lat: float, lng: float, polygon: Optional[dict] = None
                 .select("surface_solar_radiation_downwards_sum"))
         if coll.size().getInfo() == 0:
             return {"available": False, "reason": "No ERA5-Land solar radiation scenes in the completed climate window."}
-        # The *_sum band is daily accumulated J/m². Average the daily
-        # accumulated field, then convert J/m² to MJ/m²/day.
         val_j = _reduce_mean(coll.mean(), region, scale=11132)
         if val_j is None:
-            # Fallback to the net downward solar sum if the primary band
-            # cannot be reduced for this grid cell.
             fallback = (ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")
                         .filterDate(start, end).filterBounds(region)
                         .select("surface_net_solar_radiation_sum"))
@@ -71,14 +63,14 @@ def fetch_solar_radiation(lat: float, lng: float, polygon: Optional[dict] = None
 
 def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None,
               current_year: Optional[int] = None, history_years: int = 10) -> Dict[str, Any]:
-    """Seasonal precipitation anomaly z-score using completed years."""
+    """Seasonal precipitation anomaly z-score using CHIRPS v3 completed years."""
     region = _weather_region(lat, lng, polygon)
     current_year = current_year or _latest_completed_year()
     if current_year >= datetime.utcnow().year:
         current_year = datetime.utcnow().year - 1
     start_year = current_year - history_years
     years_list = ee.List.sequence(start_year, current_year)
-    chirps = ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
+    chirps = ee.ImageCollection(CHIRPS_COLLECTION)
 
     def _season_total(y):
         y = ee.Number(y)
@@ -100,7 +92,7 @@ def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None,
     valid = [(y, v) for y, v in pairs if v is not None]
     current_pair = next(((y, v) for y, v in valid if y == current_year), None)
     if current_pair is None:
-        return {"available": False, "reason": f"No completed CHIRPS rainfall data for {current_year}."}
+        return {"available": False, "reason": f"No completed CHIRPS v3 rainfall data for {current_year}."}
     history = [v for y, v in valid if y < current_year]
     if len(history) < 4:
         return {"available": False, "reason": "Insufficient completed rainfall history for SPI."}
@@ -110,17 +102,23 @@ def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None,
     if stddev == 0:
         return {"available": False, "reason": "Zero variance in rainfall history — cannot compute SPI."}
     spi = round((current - mean) / stddev, 2)
-    if spi <= -2: category = "Extreme drought"
-    elif spi <= -1.5: category = "Severe drought"
-    elif spi <= -1: category = "Moderate drought"
-    elif spi < 1: category = "Near normal"
-    elif spi < 1.5: category = "Moderately wet"
-    else: category = "Very wet"
+    if spi <= -2:
+        category = "Extreme drought"
+    elif spi <= -1.5:
+        category = "Severe drought"
+    elif spi <= -1:
+        category = "Moderate drought"
+    elif spi < 1:
+        category = "Near normal"
+    elif spi < 1.5:
+        category = "Moderately wet"
+    else:
+        category = "Very wet"
     return {"available": True, "spi": spi, "category": category,
             "current_season_rainfall_mm": round(current, 1),
             "historical_mean_mm": round(mean, 1), "historical_stddev_mm": round(stddev, 1),
             "years_used": len(history), "season_year": current_year,
-            "source": "CHIRPS (Jun-Oct completed-season window)"}
+            "source": "CHIRPS v3 (Jun-Oct completed-season window)"}
 
 
 def fetch_gdd(lat: float, lng: float, polygon: Optional[dict] = None,
@@ -150,15 +148,17 @@ def fetch_gdd(lat: float, lng: float, polygon: Optional[dict] = None,
 
 def fetch_spei_proxy(lat: float, lng: float, polygon: Optional[dict] = None,
                       current_year: Optional[int] = None) -> Dict[str, Any]:
-    """Simplified Thornthwaite PET water-balance proxy."""
+    """Simplified Thornthwaite PET water-balance proxy using CHIRPS v3 rainfall."""
     region = _weather_region(lat, lng, polygon)
     current_year = current_year or _latest_completed_year()
     if current_year >= datetime.utcnow().year:
         current_year = datetime.utcnow().year - 1
     try:
-        rain_coll = (ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
+        rain_coll = (ee.ImageCollection(CHIRPS_COLLECTION)
                      .filterDate(f"{current_year}-06-01", f"{current_year}-11-01")
                      .filterBounds(region))
+        if rain_coll.size().getInfo() == 0:
+            return {"available": False, "reason": f"No completed CHIRPS v3 rainfall data for {current_year}."}
         rainfall_total = _reduce_mean(rain_coll.sum(), region, scale=5566)
         temp_coll = (ee.ImageCollection("MODIS/061/MOD11A1")
                      .filterDate(f"{current_year}-06-01", f"{current_year}-11-01")
@@ -173,14 +173,17 @@ def fetch_spei_proxy(lat: float, lng: float, polygon: Optional[dict] = None,
         pet_season_mm = pet_monthly_mm * 5
         water_balance = rainfall_total - pet_season_mm
         spei_proxy = round(max(-3, min(3, water_balance / 300)), 2)
-        if spei_proxy <= -1.5: category = "Dry stress (proxy)"
-        elif spei_proxy < 1.5: category = "Near normal (proxy)"
-        else: category = "Excess moisture (proxy)"
+        if spei_proxy <= -1.5:
+            category = "Dry stress (proxy)"
+        elif spei_proxy < 1.5:
+            category = "Near normal (proxy)"
+        else:
+            category = "Excess moisture (proxy)"
         return {"available": True, "spei_proxy": spei_proxy, "category": category,
                 "rainfall_mm": round(rainfall_total, 1), "estimated_pet_mm": round(pet_season_mm, 1),
                 "season_year": current_year,
                 "method": "Thornthwaite PET (temperature-only) vs rainfall; simplified proxy, NOT the full standard SPEI.",
-                "source": "CHIRPS + MODIS LST"}
+                "source": "CHIRPS v3 + MODIS LST"}
     except Exception as exc:
         logger.exception("SPEI proxy fetch failed")
         return {"available": False, "reason": f"SPEI proxy computation failed: {type(exc).__name__}"}

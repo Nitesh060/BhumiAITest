@@ -1,51 +1,42 @@
-"""
-comprehensive_score_service.py
-================================
-Transparent 0-100 composite score across vegetation, radar and weather
-signals. This is a suitability/condition index, not a validated yield or
-credit-risk model. Thresholds are intentionally conservative and are
-reported as provisional until ground-truth farm outcomes are available.
-"""
+"""Transparent 0-100 composite FarmScore model.
 
+This is a suitability/condition index, not a validated yield or credit-risk
+model. Thresholds and weights remain provisional until ground-truth farm
+outcomes are available.
+"""
 from __future__ import annotations
-
 from typing import Any, Dict, Optional
 
 DEFAULT_WEIGHTS = {
-    # Vegetation — 45% total
     "ndvi": 5.0, "evi": 5.0, "savi": 5.0, "msavi": 5.0, "ndre": 5.0,
     "ndmi": 5.0, "ndwi": 5.0, "ci_green": 5.0, "ci_rededge": 5.0,
-    # Radar — 20%
     "vv": 5.0, "vh": 5.0, "vh_vv": 5.0, "rvi": 5.0,
-    # Weather — 25%. The source currently exposes temperature as MODIS LST,
-    # so air_temp is deliberately zero-weighted to avoid counting the same
-    # signal twice.
     "rainfall": 5.0, "air_temp": 0.0, "solar_radiation": 5.0,
-    "spi": 5.0, "spei": 5.0, "gdd": 5.0,
-    # Temperature — 10%
-    "lst": 10.0,
+    "spi": 5.0, "spei": 5.0, "gdd": 5.0, "lst": 10.0,
 }
 
-# Canonical 300-900 grade bands. This is the single place grade cut-offs are
-# defined — scoring.py delegates to _assign_grade() below instead of keeping
-# its own copy, so the FarmScore ("/calculate", PDF, WhatsApp) and the raw
-# comprehensive score ("/comprehensive-score") endpoints can never disagree
-# on the grade for the same underlying score again.
-DEFAULT_GRADE = "Poor"
-GRADE_BANDS = [
-    (781, "Excellent"),
-    (661, "Good"),
-    (541, "Average"),
-    (421, "Fair"),
-]
+# These groups make the known redundancy structure explicit. The model does
+# not claim these signals are statistically independent. A future empirical
+# calibration can use this map to replace individual weights with group-level
+# weights after correlation/PCA testing on ground-truth farms.
+PARAMETER_GROUPS = {
+    "vegetation_health": ["ndvi", "evi", "savi", "msavi"],
+    "crop_health_red_edge": ["ndre", "ci_green", "ci_rededge"],
+    "moisture_water": ["ndmi", "ndwi"],
+    "radar": ["vv", "vh", "vh_vv", "rvi"],
+    "precipitation_water_balance": ["rainfall", "spi", "spei"],
+    "temperature_heat": ["air_temp", "lst", "gdd"],
+    "solar": ["solar_radiation"],
+}
 
+DEFAULT_GRADE = "Poor"
+GRADE_BANDS = [(781, "Excellent"), (661, "Good"), (541, "Average"), (421, "Fair")]
 
 def _assign_grade(scaled_score: float) -> str:
     for threshold, label in GRADE_BANDS:
         if scaled_score >= threshold:
             return label
     return DEFAULT_GRADE
-
 
 PARAMETER_LABELS = {
     "ndvi": "NDVI (Vegetation Health)", "evi": "EVI (Enhanced Vegetation Index)",
@@ -60,10 +51,8 @@ PARAMETER_LABELS = {
     "gdd": "GDD (Growing Degree Days)", "lst": "LST (Land Surface Temperature)",
 }
 
-
 def _clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, v))
-
 
 def _range_score(v: float, low: float, ideal_low: float, ideal_high: float, high: float) -> float:
     if v <= low or v >= high:
@@ -73,7 +62,6 @@ def _range_score(v: float, low: float, ideal_low: float, ideal_high: float, high
     if v < ideal_low:
         return _clamp((v - low) / (ideal_low - low) * 100.0)
     return _clamp((high - v) / (high - ideal_high) * 100.0)
-
 
 def _norm_ndvi(v): return None if v is None else _range_score(v, 0.10, 0.45, 0.80, 0.95)
 def _norm_evi(v): return None if v is None else _range_score(v, 0.02, 0.25, 0.55, 0.75)
@@ -96,15 +84,7 @@ def _norm_spei(v): return None if v is None else _clamp(100.0 - abs(v) * 20.0)
 def _norm_gdd(v): return None if v is None else _range_score(v, 200.0, 900.0, 2200.0, 3500.0)
 def _norm_lst(v): return None if v is None else _range_score(v, 5.0, 18.0, 32.0, 45.0)
 
-_NORMALIZERS = {
-    "ndvi": _norm_ndvi, "evi": _norm_evi, "savi": _norm_savi, "msavi": _norm_msavi,
-    "ndre": _norm_ndre, "ndmi": _norm_ndmi, "ndwi": _norm_ndwi,
-    "ci_green": _norm_ci_green, "ci_rededge": _norm_ci_rededge,
-    "vv": _norm_vv, "vh": _norm_vh, "vh_vv": _norm_vh_vv, "rvi": _norm_rvi,
-    "rainfall": _norm_rainfall, "air_temp": _norm_air_temp, "solar_radiation": _norm_solar,
-    "spi": _norm_spi, "spei": _norm_spei, "gdd": _norm_gdd, "lst": _norm_lst,
-}
-
+_NORMALIZERS = {"ndvi":_norm_ndvi,"evi":_norm_evi,"savi":_norm_savi,"msavi":_norm_msavi,"ndre":_norm_ndre,"ndmi":_norm_ndmi,"ndwi":_norm_ndwi,"ci_green":_norm_ci_green,"ci_rededge":_norm_ci_rededge,"vv":_norm_vv,"vh":_norm_vh,"vh_vv":_norm_vh_vv,"rvi":_norm_rvi,"rainfall":_norm_rainfall,"air_temp":_norm_air_temp,"solar_radiation":_norm_solar,"spi":_norm_spi,"spei":_norm_spei,"gdd":_norm_gdd,"lst":_norm_lst}
 
 def compute_comprehensive_score(raw_values: Dict[str, Optional[float]], weights: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     weights = weights or DEFAULT_WEIGHTS
@@ -119,18 +99,11 @@ def compute_comprehensive_score(raw_values: Dict[str, Optional[float]], weights:
             numeric = None
         sub_score = _NORMALIZERS[key](numeric)
         weight = max(0.0, float(weights.get(key, 0.0)))
-        components[key] = {
-            "label": PARAMETER_LABELS.get(key, key),
-            "raw_value": numeric,
-            "sub_score": round(sub_score, 2) if sub_score is not None else None,
-            "weight_pct": weight,
-        }
+        components[key] = {"label": PARAMETER_LABELS.get(key, key), "raw_value": numeric, "sub_score": round(sub_score, 2) if sub_score is not None else None, "weight_pct": weight}
         if sub_score is not None and weight > 0:
             available_weight_sum += weight
-
     if available_weight_sum <= 0:
         return {"score_0_100": None, "reason": "No usable parameters were provided.", "components": components}
-
     weighted_sum = 0.0
     for c in components.values():
         if c["sub_score"] is not None and c["weight_pct"] > 0:
@@ -138,26 +111,14 @@ def compute_comprehensive_score(raw_values: Dict[str, Optional[float]], weights:
             c["effective_weight_pct"] = round(effective_weight * 100, 2)
             c["contribution"] = round(effective_weight * c["sub_score"], 2)
             weighted_sum += effective_weight * c["sub_score"]
-
     score = round(weighted_sum, 2)
     scaled = round(300 + (score / 100) * 600)
-    # Grade is derived from the scaled 300-900 value using the single
-    # canonical band table (_assign_grade / GRADE_BANDS above), not from
-    # separate 0-100 cut-offs — that used to drift out of sync with the
-    # 300-900 bands shown in the PDF's "Colour Ranges" table and used by
-    # scoring.py, so the same farm could get "Average" from this function
-    # and "Good" from calculate_score() for the same score.
-    grade = _assign_grade(scaled)
-
     used = sum(1 for c in components.values() if c["sub_score"] is not None)
     confidence = "high" if used >= 15 else "moderate" if used >= 10 else "low"
     return {
-        "score_0_100": score,
-        "score_300_900": scaled,
-        "grade": grade,
-        "confidence": confidence,
-        "components": components,
-        "parameters_used": used,
-        "parameters_total": len(_NORMALIZERS),
-        "method": "Weighted average of transparent 0-100 suitability sub-scores. Missing parameters are redistributed proportionally. MODIS LST is counted once; air_temp is zero-weighted because the current source is the same LST signal. Thresholds are provisional and require ground-truth calibration before credit decisions.",
+        "score_0_100": score, "score_300_900": scaled, "grade": _assign_grade(scaled),
+        "confidence": confidence, "components": components, "parameters_used": used,
+        "parameters_total": len(_NORMALIZERS), "parameter_groups": PARAMETER_GROUPS,
+        "validation_status": "provisional — correlated parameter groups are explicitly tracked; empirical correlation/PCA calibration against ground-truth farms is still required",
+        "method": "Weighted average of transparent 0-100 suitability sub-scores. Missing parameters are redistributed proportionally. LST and air temperature are separate signals; air_temp contributes only when a genuine 2 m air-temperature value is supplied. Thresholds are provisional and require ground-truth calibration before credit decisions.",
     }

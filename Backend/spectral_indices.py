@@ -1,26 +1,12 @@
 """
 spectral_indices.py
 ====================
-Phase 2 — Advanced Satellite Intelligence.
+Advanced optical and Sentinel-1 SAR parameters used by FarmScore.
 
-Two families of new signals, both from real satellite data:
-
-1. Additional optical vegetation indices (EVI, SAVI, BSI) — computed
-   from Sentinel-2 the same way NDVI/NDMI/NDRE already are elsewhere
-   in this app (see spectral_service.py, which already covers NDRE —
-   not duplicated here).
-
-2. Sentinel-1 SAR (SAR = Synthetic Aperture Radar) — a genuinely new
-   data source for this app. SAR sees through cloud cover, which
-   matters a lot in India's monsoon season when optical satellites
-   (Sentinel-2) can go weeks without a clear image. Used here for a
-   soil-moisture-and-flood signal that optical data can't reliably
-   give during exactly the season farmers need it most.
-
-Index reference:
-    EVI  = 2.5 * (NIR-Red) / (NIR + 6*Red - 7.5*Blue + 1)     bands B8,B4,B2
-    SAVI = ((NIR-Red)/(NIR+Red+L)) * (1+L), L=0.5              bands B8,B4
-    BSI  = ((Red+SWIR)-(NIR+Blue)) / ((Red+SWIR)+(NIR+Blue))   bands B4,B11,B8,B2
+All FarmScore optical/SAR parameters use the same central Earth Engine
+region/date/cloud-mask helpers as the rest of the score pipeline. This avoids
+the previous split where EVI/SAVI/MSAVI/chlorophyll/NDWI and SAR used a
+hard-coded 2024 window while NDVI/NDMI/NDRE used the central dynamic window.
 """
 
 from __future__ import annotations
@@ -30,7 +16,14 @@ from typing import Any, Dict, Optional
 
 import ee
 
-from earth_engine_service import _get_region, _reduce_mean, _buffered_region
+from earth_engine_service import (
+    _date_window,
+    _filter_season,
+    _get_region,
+    _reduce_mean,
+    _sentinel2_cloud_masked,
+    initialise_earth_engine,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,24 +31,23 @@ S2_COLLECTION = "COPERNICUS/S2_SR_HARMONIZED"
 S1_COLLECTION = "COPERNICUS/S1_GRD"
 
 
-def _latest_s2_image(region, start="2024-01-01", end="2024-12-31", max_cloud=20):
-    coll = (
-        ee.ImageCollection(S2_COLLECTION)
-        .filterBounds(region)
-        .filterDate(start, end)
-        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", max_cloud))
-        .sort("CLOUDY_PIXEL_PERCENTAGE")
+def _latest_s2_image(lat: float, lng: float, polygon: Optional[dict] = None):
+    """Return the central, cloud/shadow-masked recent growing-season composite."""
+    start, end = _date_window()
+    coll = _filter_season(
+        _sentinel2_cloud_masked(lat, lng, polygon).filterDate(start, end)
     )
     return coll.median()
 
 
 def fetch_extended_indices(lat: float, lng: float, polygon: Optional[dict] = None) -> Dict[str, Any]:
-    """EVI, SAVI, MSAVI, BSI, CI_Green, CI_RedEdge, NDWI for one farm —
-    extends the NDVI/NDMI/NDRE already computed elsewhere with more
-    standard remote-sensing indices.
+    """EVI, SAVI, MSAVI, BSI, CI_Green, CI_RedEdge and NDWI.
+
+    Uses the same Sentinel-2 date window and pixel-level cloud/shadow mask as
+    the core NDVI/NDMI/NDWI pipeline.
     """
     region = _get_region(lat, lng, polygon)
-    img = _latest_s2_image(region)
+    img = _latest_s2_image(lat, lng, polygon)
 
     nir = img.select("B8").divide(10000)
     red = img.select("B4").divide(10000)
@@ -68,11 +60,8 @@ def fetch_extended_indices(lat: float, lng: float, polygon: Optional[dict] = Non
         nir.add(red.multiply(6)).subtract(blue.multiply(7.5)).add(1)
     ).rename("EVI")
 
-    L = 0.5
-    savi = nir.subtract(red).divide(nir.add(red).add(L)).multiply(1 + L).rename("SAVI")
+    savi = nir.subtract(red).divide(nir.add(red).add(0.5)).multiply(1.5).rename("SAVI")
 
-    # MSAVI (Modified SAVI) — self-adjusting soil-brightness correction,
-    # no fixed L constant needed (Qi et al. 1994)
     msavi = nir.multiply(2).add(1).subtract(
         nir.multiply(2).add(1).pow(2).subtract(nir.subtract(red).multiply(8)).sqrt()
     ).divide(2).rename("MSAVI")
@@ -81,18 +70,14 @@ def fetch_extended_indices(lat: float, lng: float, polygon: Optional[dict] = Non
         (red.add(swir)).add(nir.add(blue))
     ).rename("BSI")
 
-    # Chlorophyll Index (Gitelson et al.) — (NIR/band) - 1
     ci_green = nir.divide(green).subtract(1).rename("CI_Green")
     ci_rededge = nir.divide(red_edge).subtract(1).rename("CI_RedEdge")
-
-    # Classic McFeeters NDWI (Green, NIR) — water/flooding presence,
-    # distinct from NDMI (NIR, SWIR canopy-moisture) already used elsewhere
     ndwi = green.subtract(nir).divide(green.add(nir)).rename("NDWI")
 
     combined = ee.Image.cat([evi, savi, msavi, bsi, ci_green, ci_rededge, ndwi])
     result = combined.reduceRegion(
         reducer=ee.Reducer.mean(), geometry=region, scale=20, maxPixels=1e9,
-    ).getInfo()
+    ).getInfo() or {}
 
     def _r(key):
         v = result.get(key)
@@ -100,6 +85,7 @@ def fetch_extended_indices(lat: float, lng: float, polygon: Optional[dict] = Non
 
     evi_val, savi_val, msavi_val, bsi_val = _r("EVI"), _r("SAVI"), _r("MSAVI"), _r("BSI")
     ci_green_val, ci_rededge_val, ndwi_val = _r("CI_Green"), _r("CI_RedEdge"), _r("NDWI")
+    start, end = _date_window()
 
     return {
         "evi": evi_val,
@@ -112,7 +98,8 @@ def fetch_extended_indices(lat: float, lng: float, polygon: Optional[dict] = Non
         "ci_green": ci_green_val,
         "ci_rededge": ci_rededge_val,
         "ndwi": ndwi_val,
-        "source": "Sentinel-2 (median composite, <20% cloud)",
+        "source": "Sentinel-2 (central cloud/shadow-masked growing-season median)",
+        "data_window": {"start": start, "end": end},
     }
 
 
@@ -146,30 +133,28 @@ def _bsi_label(v: Optional[float]) -> Optional[str]:
     return "Well-covered by vegetation"
 
 
-# ---------------------------------------------------------------------------
-# Sentinel-1 SAR — soil moisture / flood signal, cloud-penetrating
-# ---------------------------------------------------------------------------
+def fetch_sar_moisture(
+    lat: float,
+    lng: float,
+    polygon: Optional[dict] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Sentinel-1 VV/VH/RVI using the same recent growing-season window.
 
-def fetch_sar_moisture(lat: float, lng: float, polygon: Optional[dict] = None,
-                        start: str = "2024-01-01", end: str = "2024-12-31") -> Dict[str, Any]:
-    """VV/VH backscatter from Sentinel-1 — works through cloud cover,
-    which matters most exactly when farmers need it (monsoon season,
-    when optical Sentinel-2 often can't get a clear shot for weeks).
-
-    Rough interpretation (well-established in SAR literature, not this
-    app's own invention):
-      - Very low VV (< -17 dB) → standing water / flooding
-      - VV/VH backscatter trends correlate with soil moisture and crop
-        biomass, but this is an INDICATIVE proxy, not a calibrated
-        volumetric soil-moisture measurement (that needs field
-        calibration this app doesn't have).
+    The score uses a median composite rather than one arbitrary 2024 scene,
+    reducing sensitivity to one acquisition date. VV/VH remain indicative
+    backscatter proxies, not calibrated volumetric soil-moisture readings.
     """
     region = _get_region(lat, lng, polygon)
+    if not start or not end:
+        start, end = _date_window()
 
     coll = (
         ee.ImageCollection(S1_COLLECTION)
         .filterBounds(region)
         .filterDate(start, end)
+        .filter(ee.Filter.calendarRange(8, 10, "month"))
         .filter(ee.Filter.eq("instrumentMode", "IW"))
         .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VV"))
         .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VH"))
@@ -178,37 +163,44 @@ def fetch_sar_moisture(lat: float, lng: float, polygon: Optional[dict] = None,
 
     count = coll.size().getInfo()
     if count == 0:
-        return {"available": False, "reason": "No Sentinel-1 scenes found for this date range/location.", "source": "Sentinel-1 GRD"}
+        return {
+            "available": False,
+            "reason": "No Sentinel-1 scenes found for the configured growing-season window.",
+            "source": "Sentinel-1 GRD",
+            "data_window": {"start": start, "end": end},
+        }
 
-    latest = coll.sort("system:time_start", False).first()
-    stats = latest.reduceRegion(reducer=ee.Reducer.mean(), geometry=region, scale=20, maxPixels=1e9).getInfo()
+    composite = coll.median()
+    stats = composite.reduceRegion(
+        reducer=ee.Reducer.mean(), geometry=region, scale=20, maxPixels=1e9
+    ).getInfo() or {}
 
     vv, vh = stats.get("VV"), stats.get("VH")
-    if vv is None:
-        return {"available": False, "reason": "Sentinel-1 data unavailable for this location.", "source": "Sentinel-1 GRD"}
+    if vv is None or vh is None:
+        return {
+            "available": False,
+            "reason": "Sentinel-1 VV/VH data unavailable for this location.",
+            "source": "Sentinel-1 GRD",
+            "data_window": {"start": start, "end": end},
+        }
 
-    flood_signal = vv < -17
-    vv_vh_diff_db = round(vv - vh, 2) if vh is not None else None  # dB difference
-
-    # RVI (Radar Vegetation Index) and linear VH/VV ratio need LINEAR
-    # power values, not dB — GRD backscatter is stored in dB (log
-    # scale), so convert: linear = 10^(dB/10)
-    rvi, vh_vv_ratio_linear = None, None
-    if vh is not None:
-        vv_lin = 10 ** (vv / 10)
-        vh_lin = 10 ** (vh / 10)
-        vh_vv_ratio_linear = round(vh_lin / vv_lin, 4) if vv_lin else None
-        rvi = round(4 * vh_lin / (vv_lin + vh_lin), 4) if (vv_lin + vh_lin) else None
+    vv, vh = float(vv), float(vh)
+    vv_vh_diff_db = round(vv - vh, 2)
+    vv_lin = 10 ** (vv / 10)
+    vh_lin = 10 ** (vh / 10)
+    vh_vv_ratio_linear = round(vh_lin / vv_lin, 4) if vv_lin else None
+    rvi = round(4 * vh_lin / (vv_lin + vh_lin), 4) if (vv_lin + vh_lin) else None
 
     return {
         "available": True,
         "vv_db": round(vv, 2),
-        "vh_db": round(vh, 2) if vh is not None else None,
+        "vh_db": round(vh, 2),
         "vv_vh_diff_db": vv_vh_diff_db,
         "vh_vv_ratio": vh_vv_ratio_linear,
         "rvi": rvi,
-        "flood_signal": flood_signal,
-        "note": "VV/VH backscatter — indicative moisture/flood proxy, not a calibrated volumetric soil-moisture reading. RVI/VH-VV ratio computed from linear power (converted from dB), per standard SAR-vegetation literature.",
-        "source": "Sentinel-1 GRD (most recent scene, cloud-penetrating radar)",
+        "flood_signal": vv < -17,
+        "note": "VV/VH backscatter is an indicative moisture/flood proxy, not calibrated volumetric soil moisture. RVI and VH/VV are computed from linear power converted from dB.",
+        "source": "Sentinel-1 GRD (growing-season median)",
         "scenes_available_in_period": count,
+        "data_window": {"start": start, "end": end},
     }

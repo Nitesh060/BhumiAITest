@@ -61,46 +61,60 @@ def fetch_solar_radiation(lat: float, lng: float, polygon: Optional[dict] = None
         return {"available": False, "reason": f"Solar radiation fetch failed: {type(exc).__name__}"}
 
 
+def _season_rainfall_mm(region: ee.Geometry, year: int) -> Optional[float]:
+    """Reduce one completed Jun-Oct CHIRPS season to a native Python float.
+
+    Deliberately evaluates one year at a time instead of constructing an
+    ee.List.map/FeatureCollection graph. That avoids a very large nested
+    client-side serializer graph on the Earth Engine Python API.
+    """
+    start, end = _completed_season_window(year)
+    coll = (ee.ImageCollection(CHIRPS_COLLECTION)
+            .filterDate(start, end)
+            .filterBounds(region)
+            .select("precipitation"))
+    if coll.size().getInfo() == 0:
+        return None
+    return _reduce_mean(coll.sum(), region, scale=5566)
+
+
 def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None,
-              current_year: Optional[int] = None, history_years: int = 10) -> Dict[str, Any]:
-    """Seasonal precipitation anomaly z-score using CHIRPS v3 completed years."""
+              current_year: Optional[int] = None, history_years: int = 8) -> Dict[str, Any]:
+    """Seasonal precipitation anomaly z-score using CHIRPS v3 completed years.
+
+    Uses explicit year-by-year reductions rather than ee.List.map so the
+    client sends small, bounded Earth Engine requests and never builds the
+    recursive serializer graph that previously killed the Render worker.
+    """
     region = _weather_region(lat, lng, polygon)
     current_year = current_year or _latest_completed_year()
     if current_year >= datetime.utcnow().year:
         current_year = datetime.utcnow().year - 1
     start_year = current_year - history_years
-    years_list = ee.List.sequence(start_year, current_year)
-    chirps = ee.ImageCollection(CHIRPS_COLLECTION)
-
-    def _season_total(y):
-        y = ee.Number(y)
-        start = ee.Date.fromYMD(y, 6, 1)
-        end = ee.Date.fromYMD(y, 11, 1)
-        total_img = chirps.filterDate(start, end).filterBounds(region).sum()
-        val = total_img.reduceRegion(reducer=ee.Reducer.mean(), geometry=region,
-                                      scale=5566, maxPixels=1e9, bestEffort=True).get("precipitation")
-        return ee.Feature(None, {"year": y, "rainfall_mm": val})
 
     try:
-        raw = ee.FeatureCollection(years_list.map(_season_total)).getInfo()
+        annual = []
+        for year in range(start_year, current_year + 1):
+            value = _season_rainfall_mm(region, year)
+            annual.append((year, value))
     except Exception as exc:
-        logger.exception("Batched SPI fetch failed")
+        logger.exception("Year-by-year SPI fetch failed")
         return {"available": False, "reason": f"Rainfall history fetch failed: {type(exc).__name__}"}
 
-    features = sorted(raw.get("features", []), key=lambda f: f["properties"]["year"])
-    pairs = [(f["properties"]["year"], f["properties"].get("rainfall_mm")) for f in features]
-    valid = [(y, v) for y, v in pairs if v is not None]
+    valid = [(y, v) for y, v in annual if v is not None]
     current_pair = next(((y, v) for y, v in valid if y == current_year), None)
     if current_pair is None:
         return {"available": False, "reason": f"No completed CHIRPS v3 rainfall data for {current_year}."}
     history = [v for y, v in valid if y < current_year]
     if len(history) < 4:
         return {"available": False, "reason": "Insufficient completed rainfall history for SPI."}
+
     current = current_pair[1]
     mean = sum(history) / len(history)
     stddev = math.sqrt(sum((x - mean) ** 2 for x in history) / len(history))
     if stddev == 0:
         return {"available": False, "reason": "Zero variance in rainfall history — cannot compute SPI."}
+
     spi = round((current - mean) / stddev, 2)
     if spi <= -2:
         category = "Extreme drought"
@@ -114,6 +128,7 @@ def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None,
         category = "Moderately wet"
     else:
         category = "Very wet"
+
     return {"available": True, "spi": spi, "category": category,
             "current_season_rainfall_mm": round(current, 1),
             "historical_mean_mm": round(mean, 1), "historical_stddev_mm": round(stddev, 1),

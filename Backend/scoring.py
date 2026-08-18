@@ -19,8 +19,8 @@ def calculate_score(raw_values: Dict[str, Optional[float]], weights: Optional[Di
     comp_result = compute_comprehensive_score(normalized, weights=weights)
     if comp_result.get("score_0_100") is None:
         logger.warning("calculate_score: no usable parameters")
-        return {"final_score": 300, "grade": DEFAULT_GRADE, "components": {}}
+        return {"final_score": 300, "grade": DEFAULT_GRADE, "components": {}, "parameters_used": 0, "parameters_total": comp_result.get("parameters_total", 20), "confidence": "low"}
     components = {}
     for key, c in comp_result["components"].items():
         components[key] = {"raw_value": c["raw_value"], "sub_score": c["sub_score"], "weight": c["weight_pct"], "weighted_contribution": c.get("contribution"), "data_available": c["sub_score"] is not None, "unit": _UNITS.get(key, ""), "source": _SOURCES.get(key, ""), "label": PARAMETER_LABELS.get(key, key)}
-    return {"final_score": comp_result["score_300_900"], "grade": comp_result["grade"], "components": components, "parameters_used": comp_result["parameters_used"], "parameters_total": comp_result["parameters_total"]}
+    return {"final_score": comp_result["score_300_900"], "grade": comp_result["grade"], "components": components, "parameters_used": comp_result["parameters_used"], "parameters_total": comp_result["parameters_total"], "confidence": comp_result.get("confidence", "low"), "parameter_groups": comp_result.get("parameter_groups", {}), "validation_status": comp_result.get("validation_status")}

@@ -180,21 +180,48 @@ def _fetch_s2_indices(lat: float, lng: float, polygon: Optional[dict]):
     return tuple(float(result[k]) if result.get(k) is not None else None for k in ("NDVI", "NDMI", "NDWI"))
 
 
+def _latest_completed_climate_year() -> int:
+    """Latest full calendar year available for climate-season scoring."""
+    return date.today().year - 1
+
+
+def _completed_climate_window(year: int) -> Tuple[str, str]:
+    return f"{year}-06-01", f"{year}-11-01"
+
+
 def _fetch_rainfall(lat: float, lng: float, polygon: Optional[dict]) -> Optional[float]:
     region, _ = _region_geometry(lat, lng, polygon)
-    start, end = _date_window()
-    c = _filter_season(ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY").filterDate(start, end).filterBounds(region).select("precipitation"))
-    return _reduce_mean(c.mean(), region, 5566)
+    year = _latest_completed_climate_year()
+    start, end = _completed_climate_window(year)
+    try:
+        c = (ee.ImageCollection("UCSB-CHC/CHIRPS/V3/DAILY_SAT")
+             .filterDate(start, end)
+             .filterBounds(region)
+             .select("precipitation"))
+        if c.size().getInfo() == 0:
+            return None
+        # CHIRPS precipitation is mm/day. Mean over the completed
+        # Jun-Oct season therefore remains a mean daily rainfall value.
+        return _reduce_mean(c.mean(), region, 5566)
+    except Exception:
+        logger.exception("Rainfall fetch failed")
+        return None
 
 
 def _fetch_rainfall_monthly(lat: float, lng: float, polygon: Optional[dict]) -> list:
     region, _ = _region_geometry(lat, lng, polygon)
-    start, end = _date_window()
+    year = _latest_completed_climate_year()
     out = []
-    for month, label in zip(SEASON_MONTHS, ("Aug", "Sep", "Oct")):
-        c = (ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY").filterDate(start, end).filterBounds(region)
-             .filter(ee.Filter.calendarRange(month, month, "month")).select("precipitation"))
-        value = _reduce_mean(c.mean(), region, 5566)
+    for month, label in zip((6, 7, 8, 9, 10), ("Jun", "Jul", "Aug", "Sep", "Oct")):
+        try:
+            c = (ee.ImageCollection("UCSB-CHC/CHIRPS/V3/DAILY_SAT")
+                 .filterDate(f"{year}-{month:02d}-01", f"{year}-{month + 1:02d}-01" if month < 10 else f"{year + 1}-01-01")
+                 .filterBounds(region)
+                 .select("precipitation"))
+            value = _reduce_mean(c.mean(), region, 5566) if c.size().getInfo() else None
+        except Exception:
+            logger.exception("Rainfall monthly fetch failed for %s", label)
+            value = None
         out.append({"month": label, "mm_per_day": round(value, 2) if value is not None else None})
     return out
 

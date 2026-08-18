@@ -214,12 +214,12 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
         "vh_vv": sar.get("vh_vv_ratio") if sar.get("available") else None,
         "rvi": sar.get("rvi") if sar.get("available") else None,
         "rainfall": satellite_data.get("rainfall"),
-        "air_temp": satellite_data.get("temperature"),
+        "air_temp": satellite_data.get("air_temperature"),
         "solar_radiation": solar.get("avg_daily_solar_radiation_mj_m2") if solar.get("available") else None,
         "spi": spi.get("spi") if spi.get("available") else None,
         "spei": spei.get("spei_proxy") if spei.get("available") else None,
         "gdd": gdd.get("gdd") if gdd.get("available") else None,
-        "lst": satellite_data.get("temperature"),
+        "lst": satellite_data.get("lst"),
     }
 
     result = calculate_score(comprehensive_raw_values)
@@ -227,7 +227,7 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
         satellite_data.get("ndvi"),
         satellite_data.get("ndmi"),
         satellite_data.get("rainfall"),
-        satellite_data.get("temperature"),
+        satellite_data.get("air_temperature"),
         satellite_data.get("groundwater"),
         evi=comprehensive_raw_values.get("evi"),
         ndre=comprehensive_raw_values.get("ndre"),
@@ -288,7 +288,7 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
         return {"level": level, "flags": flags}
 
     climate_risk = _assess_climate_risk(
-        satellite_data.get("rainfall"), satellite_data.get("temperature"),
+        satellite_data.get("rainfall"), satellite_data.get("air_temperature"),
         spi_val=comprehensive_raw_values.get("spi"),
         gdd_val=comprehensive_raw_values.get("gdd"),
         spei_val=comprehensive_raw_values.get("spei"),
@@ -327,7 +327,7 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
 
     # AEZ is cheap (no GEE call) — compute directly from data already fetched
     enrichment["agro_ecological_zone"] = estimate_agro_ecological_zone(
-        satellite_data.get("rainfall"), satellite_data.get("temperature")
+        satellite_data.get("rainfall"), satellite_data.get("air_temperature")
     )
 
     # ---- Yield Prediction (formula-based proxy, see yield_prediction.py) ----

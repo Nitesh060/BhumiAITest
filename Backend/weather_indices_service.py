@@ -49,10 +49,20 @@ def fetch_solar_radiation(lat: float, lng: float, polygon: Optional[dict] = None
                 .select("surface_solar_radiation_downwards_sum"))
         if coll.size().getInfo() == 0:
             return {"available": False, "reason": "No ERA5-Land solar radiation scenes in the completed climate window."}
+        # The *_sum band is daily accumulated J/m². Average the daily
+        # accumulated field, then convert J/m² to MJ/m²/day.
         val_j = _reduce_mean(coll.mean(), region, scale=11132)
         if val_j is None:
+            # Fallback to the net downward solar sum if the primary band
+            # cannot be reduced for this grid cell.
+            fallback = (ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")
+                        .filterDate(start, end).filterBounds(region)
+                        .select("surface_net_solar_radiation_sum"))
+            if fallback.size().getInfo():
+                val_j = _reduce_mean(fallback.mean(), region, scale=11132)
+        if val_j is None:
             return {"available": False, "reason": "ERA5-Land solar radiation reduction returned no value."}
-        return {"available": True, "avg_daily_solar_radiation_mj_m2": round(val_j / 1_000_000, 2),
+        return {"available": True, "avg_daily_solar_radiation_mj_m2": round(max(0.0, val_j) / 1_000_000, 2),
                 "window": f"{start} to {end}", "source": "ECMWF ERA5-Land Daily Aggregate"}
     except Exception as exc:
         logger.exception("Solar radiation fetch failed")

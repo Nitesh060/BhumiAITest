@@ -11,14 +11,10 @@ DEFAULT_WEIGHTS = {
     "ndvi": 5.0, "evi": 5.0, "savi": 5.0, "msavi": 5.0, "ndre": 5.0,
     "ndmi": 5.0, "ndwi": 5.0, "ci_green": 5.0, "ci_rededge": 5.0,
     "vv": 5.0, "vh": 5.0, "vh_vv": 5.0, "rvi": 5.0,
-    "rainfall": 5.0, "air_temp": 0.0, "solar_radiation": 5.0,
+    "rainfall": 5.0, "air_temp": 5.0, "solar_radiation": 5.0,
     "spi": 5.0, "spei": 5.0, "gdd": 5.0, "lst": 10.0,
 }
 
-# These groups make the known redundancy structure explicit. The model does
-# not claim these signals are statistically independent. A future empirical
-# calibration can use this map to replace individual weights with group-level
-# weights after correlation/PCA testing on ground-truth farms.
 PARAMETER_GROUPS = {
     "vegetation_health": ["ndvi", "evi", "savi", "msavi"],
     "crop_health_red_edge": ["ndre", "ci_green", "ci_rededge"],
@@ -88,6 +84,21 @@ _NORMALIZERS = {"ndvi":_norm_ndvi,"evi":_norm_evi,"savi":_norm_savi,"msavi":_nor
 
 def compute_comprehensive_score(raw_values: Dict[str, Optional[float]], weights: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     weights = weights or DEFAULT_WEIGHTS
+    raw_values = dict(raw_values)
+
+    # The API historically passed the same MODIS LST value into both
+    # temperature fields. Do not count that same signal twice. Once a real
+    # ERA5-Land 2m air-temperature value is supplied, it will normally differ
+    # from LST and both signals can contribute independently.
+    air_temp = raw_values.get("air_temp")
+    lst = raw_values.get("lst")
+    if air_temp is not None and lst is not None:
+        try:
+            if abs(float(air_temp) - float(lst)) < 0.01:
+                raw_values["air_temp"] = None
+        except (TypeError, ValueError):
+            pass
+
     components = {}
     available_weight_sum = 0.0
     for key, raw in raw_values.items():
@@ -120,5 +131,5 @@ def compute_comprehensive_score(raw_values: Dict[str, Optional[float]], weights:
         "confidence": confidence, "components": components, "parameters_used": used,
         "parameters_total": len(_NORMALIZERS), "parameter_groups": PARAMETER_GROUPS,
         "validation_status": "provisional — correlated parameter groups are explicitly tracked; empirical correlation/PCA calibration against ground-truth farms is still required",
-        "method": "Weighted average of transparent 0-100 suitability sub-scores. Missing parameters are redistributed proportionally. LST and air temperature are separate signals; air_temp contributes only when a genuine 2 m air-temperature value is supplied. Thresholds are provisional and require ground-truth calibration before credit decisions.",
+        "method": "Weighted average of transparent 0-100 suitability sub-scores. Missing parameters are redistributed proportionally. LST and genuine 2m air temperature are separate signals; legacy duplicate temperature inputs are de-duplicated automatically. Thresholds are provisional and require ground-truth calibration before credit decisions.",
     }

@@ -1,22 +1,13 @@
-"""Google Earth Engine data service for FarmScore.
-
-Key corrections in this version:
-- Dynamic recent data window instead of the obsolete 2020-2023 hard-coded window.
-- Sentinel-2 pixel-level cloud/shadow masking using S2 cloud probability + SCL.
-- MODIS LST remains a separate surface-temperature signal.
-- ERA5-Land 2 m air temperature is returned separately as ``air_temperature``.
-- Deep soil moisture is explicitly labelled as a groundwater *proxy*, not groundwater.
-- Polygon is always preferred; point fallback is a small 30 m approximate region.
-- Historical NDVI/deep-soil-moisture trends use the same dynamic year window.
-"""
+"""Google Earth Engine data service for FarmScore."""
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -25,6 +16,8 @@ import ee
 logger = logging.getLogger(__name__)
 _ee_initialised = False
 _init_lock = threading.Lock()
+_cache_lock = threading.Lock()
+_coord_cache: Dict[Any, Dict[str, Any]] = {}
 
 SEASON_MONTHS = [8, 9, 10]
 LOOKBACK_YEARS = max(1, int(os.getenv("GEE_LOOKBACK_YEARS", "3")))
@@ -34,16 +27,8 @@ S2_CLOUD_PROBABILITY_MAX = min(100, max(1, int(os.getenv("S2_CLOUD_PROBABILITY_M
 
 
 def _date_window() -> Tuple[str, str]:
-    """Return a rolling Aug-Oct window ending at the current date.
-
-    The window starts on Aug 1 of LOOKBACK_YEARS years before the current
-    year and ends tomorrow so today's observations can be included when
-    available. Earth Engine treats filterDate's end as exclusive.
-    """
     today = date.today()
-    start = date(today.year - LOOKBACK_YEARS, 8, 1)
-    end = today + timedelta(days=1)
-    return start.isoformat(), end.isoformat()
+    return date(today.year - LOOKBACK_YEARS, 8, 1).isoformat(), (today + timedelta(days=1)).isoformat()
 
 
 def _trend_years() -> Tuple[int, ...]:
@@ -96,12 +81,15 @@ def initialise_earth_engine() -> None:
         if not service_account:
             raise ValueError("client_email missing from service-account key file")
         ee.Initialize(ee.ServiceAccountCredentials(service_account, key_path))
-        logger.info("Earth Engine initialised for account: %s", service_account)
         _ee_initialised = True
 
 
 def _point_geometry(lat: float, lng: float) -> ee.Geometry.Point:
     return ee.Geometry.Point([lng, lat])
+
+
+def _buffered_region(lat: float, lng: float, radius_m: int = BUFFER_RADIUS_M) -> ee.Geometry:
+    return _point_geometry(lat, lng).buffer(radius_m)
 
 
 def extract_polygon_coordinates(polygon: Optional[dict]) -> Optional[list]:
@@ -122,15 +110,32 @@ def extract_polygon_coordinates(polygon: Optional[dict]) -> Optional[list]:
         return None
 
 
-def _get_region(lat: float, lng: float, polygon: Optional[dict] = None) -> Tuple[ee.Geometry, str]:
+def _region_geometry(lat: float, lng: float, polygon: Optional[dict] = None) -> Tuple[ee.Geometry, str]:
     coords = extract_polygon_coordinates(polygon)
     if coords and len(coords) >= 4:
         return ee.Geometry.Polygon([coords]), "parcel_polygon"
-    return _point_geometry(lat, lng).buffer(BUFFER_RADIUS_M), "approximate_point_buffer"
+    return _buffered_region(lat, lng, BUFFER_RADIUS_M), "approximate_point_buffer"
+
+
+def _get_region_with_mode(lat: float, lng: float, polygon: Optional[dict] = None) -> Tuple[ee.Geometry, str]:
+    return _region_geometry(lat, lng, polygon)
+
+
+def _get_region(lat: float, lng: float, polygon: Optional[dict] = None):
+    """Compatibility helper for both new and legacy modules."""
+    region, mode = _region_geometry(lat, lng, polygon)
+    caller = inspect.currentframe().f_back.f_globals.get("__file__", "")
+    if caller.endswith("earth_engine_service.py") or caller.endswith("spectral_service.py"):
+        return region, mode
+    return region
 
 
 def _filter_season(collection: ee.ImageCollection) -> ee.ImageCollection:
     return collection.filter(ee.Filter.calendarRange(8, 10, "month"))
+
+
+def _filter_growing_season(collection: ee.ImageCollection) -> ee.ImageCollection:
+    return _filter_season(collection)
 
 
 def _reduce_mean(image: ee.Image, region: ee.Geometry, scale: int) -> Optional[float]:
@@ -142,7 +147,7 @@ def _reduce_mean(image: ee.Image, region: ee.Geometry, scale: int) -> Optional[f
 
 
 def _sentinel2_cloud_masked(lat: float, lng: float, polygon: Optional[dict]) -> ee.ImageCollection:
-    region, _ = _get_region(lat, lng, polygon)
+    region, _ = _region_geometry(lat, lng, polygon)
     s2 = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
           .filterBounds(region)
           .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", S2_MAX_CLOUD_PCT)))
@@ -152,19 +157,18 @@ def _sentinel2_cloud_masked(lat: float, lng: float, polygon: Optional[dict]) -> 
         secondary=clouds,
         condition=ee.Filter.equals(leftField="system:index", rightField="system:index"),
     )
-
     def mask(image):
         cloud_prob = ee.Image(image.get("cloud_probability")).select("probability")
         scl = image.select("SCL")
         scl_ok = scl.neq(3).And(scl.neq(8)).And(scl.neq(9)).And(scl.neq(10)).And(scl.neq(11))
         return image.updateMask(cloud_prob.lt(S2_CLOUD_PROBABILITY_MAX)).updateMask(scl_ok)
-
     return ee.ImageCollection(joined).map(mask)
 
 
 def _fetch_s2_indices(lat: float, lng: float, polygon: Optional[dict]):
-    region, _ = _get_region(lat, lng, polygon)
-    s2 = _filter_season(_sentinel2_cloud_masked(lat, lng, polygon))
+    region, _ = _region_geometry(lat, lng, polygon)
+    start, end = _date_window()
+    s2 = _filter_season(_sentinel2_cloud_masked(lat, lng, polygon).filterDate(start, end))
     def add_indices(img):
         return img.addBands([
             img.normalizedDifference(["B8", "B4"]).rename("NDVI"),
@@ -177,16 +181,18 @@ def _fetch_s2_indices(lat: float, lng: float, polygon: Optional[dict]):
 
 
 def _fetch_rainfall(lat: float, lng: float, polygon: Optional[dict]) -> Optional[float]:
-    region, _ = _get_region(lat, lng, polygon)
-    c = _filter_season(ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY").filterDate(*_date_window()).filterBounds(region).select("precipitation"))
+    region, _ = _region_geometry(lat, lng, polygon)
+    start, end = _date_window()
+    c = _filter_season(ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY").filterDate(start, end).filterBounds(region).select("precipitation"))
     return _reduce_mean(c.mean(), region, 5566)
 
 
 def _fetch_rainfall_monthly(lat: float, lng: float, polygon: Optional[dict]) -> list:
-    region, _ = _get_region(lat, lng, polygon)
+    region, _ = _region_geometry(lat, lng, polygon)
+    start, end = _date_window()
     out = []
     for month, label in zip(SEASON_MONTHS, ("Aug", "Sep", "Oct")):
-        c = (ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY").filterDate(*_date_window()).filterBounds(region)
+        c = (ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY").filterDate(start, end).filterBounds(region)
              .filter(ee.Filter.calendarRange(month, month, "month")).select("precipitation"))
         value = _reduce_mean(c.mean(), region, 5566)
         out.append({"month": label, "mm_per_day": round(value, 2) if value is not None else None})
@@ -194,41 +200,42 @@ def _fetch_rainfall_monthly(lat: float, lng: float, polygon: Optional[dict]) -> 
 
 
 def _fetch_lst(lat: float, lng: float, polygon: Optional[dict]) -> Optional[float]:
-    region, _ = _get_region(lat, lng, polygon)
-    c = _filter_season(ee.ImageCollection("MODIS/061/MOD11A1").filterDate(*_date_window()).filterBounds(region).select("LST_Day_1km"))
+    region, _ = _region_geometry(lat, lng, polygon)
+    start, end = _date_window()
+    c = _filter_season(ee.ImageCollection("MODIS/061/MOD11A1").filterDate(start, end).filterBounds(region).select("LST_Day_1km"))
     lst_c = c.map(lambda img: img.multiply(0.02).subtract(273.15).rename("LST_C")).mean()
     return _reduce_mean(lst_c, region, 1000)
 
 
 def _fetch_air_temperature(lat: float, lng: float, polygon: Optional[dict]) -> Optional[float]:
-    """Mean 2 m air temperature in Celsius from ERA5-Land, not surface LST."""
-    region, _ = _get_region(lat, lng, polygon)
-    c = _filter_season(ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")
-                       .filterDate(*_date_window()).filterBounds(region).select("temperature_2m"))
+    region, _ = _region_geometry(lat, lng, polygon)
+    start, end = _date_window()
+    c = _filter_season(ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR").filterDate(start, end).filterBounds(region).select("temperature_2m"))
     air_c = c.map(lambda img: img.subtract(273.15).rename("AIR_TEMP_C")).mean()
     return _reduce_mean(air_c, region, 11132)
 
 
 def _fetch_deep_soil_moisture(lat: float, lng: float, polygon: Optional[dict]) -> Optional[float]:
-    region, _ = _get_region(lat, lng, polygon)
-    c = _filter_season(ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H").filterDate(*_date_window()).filterBounds(region).select("SoilMoi100_200cm_inst"))
+    region, _ = _region_geometry(lat, lng, polygon)
+    start, end = _date_window()
+    c = _filter_season(ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H").filterDate(start, end).filterBounds(region).select("SoilMoi100_200cm_inst"))
     return _reduce_mean(c.mean(), region, 27830)
 
 
 def _fetch_s2_meta(lat: float, lng: float, polygon: Optional[dict]) -> Dict[str, Any]:
-    region, _ = _get_region(lat, lng, polygon)
-    c = _filter_season(_sentinel2_cloud_masked(lat, lng, polygon))
+    region, _ = _region_geometry(lat, lng, polygon)
+    start, end = _date_window()
+    c = _filter_season(_sentinel2_cloud_masked(lat, lng, polygon).filterDate(start, end))
     count = c.size().getInfo() or 0
     latest = c.aggregate_max("system:time_start").getInfo() if count else None
-    from datetime import datetime, timezone
-    return {"scene_count": int(count), "latest_scene_date": datetime.fromtimestamp(latest/1000, tz=timezone.utc).strftime("%Y-%m-%d") if latest else None, "cloud_mask": "S2 cloud probability <= {}% + SCL mask".format(S2_CLOUD_PROBABILITY_MAX)}
+    return {"scene_count": int(count), "latest_scene_date": datetime.fromtimestamp(latest / 1000, tz=timezone.utc).strftime("%Y-%m-%d") if latest else None, "cloud_mask": f"S2 cloud probability <= {S2_CLOUD_PROBABILITY_MAX}% + SCL mask"}
 
 
 def _fetch_ndvi_trend(lat: float, lng: float, polygon: Optional[dict]) -> list:
-    region, _ = _get_region(lat, lng, polygon)
+    region, _ = _region_geometry(lat, lng, polygon)
     out = []
     for year in _trend_years():
-        c = _sentinel2_cloud_masked(lat, lng, polygon).filterDate(f"{year}-08-01", f"{year}-10-31")
+        c = _sentinel2_cloud_masked(lat, lng, polygon).filterDate(f"{year}-08-01", f"{year}-11-01")
         ndvi = c.map(lambda img: img.normalizedDifference(["B8", "B4"]).rename("NDVI")).mean()
         value = _reduce_mean(ndvi, region, 10)
         out.append({"year": year, "ndvi": round(value, 4) if value is not None else None})
@@ -236,10 +243,10 @@ def _fetch_ndvi_trend(lat: float, lng: float, polygon: Optional[dict]) -> list:
 
 
 def _fetch_deep_soil_trend(lat: float, lng: float, polygon: Optional[dict]) -> list:
-    region, _ = _get_region(lat, lng, polygon)
+    region, _ = _region_geometry(lat, lng, polygon)
     out = []
     for year in _trend_years():
-        c = ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H").filterDate(f"{year}-08-01", f"{year}-10-31").filterBounds(region).select("SoilMoi100_200cm_inst")
+        c = ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H").filterDate(f"{year}-08-01", f"{year}-11-01").filterBounds(region).select("SoilMoi100_200cm_inst")
         value = _reduce_mean(c.mean(), region, 27830)
         out.append({"year": year, "deep_soil_moisture": round(value, 2) if value is not None else None})
     return out
@@ -251,14 +258,13 @@ def fetch_farm_data(lat: float, lng: float, polygon: Optional[dict] = None) -> D
     if not (-180 <= lng <= 180):
         raise ValueError(f"Longitude out of range: {lng}")
     initialise_earth_engine()
-    region, region_mode = _get_region(lat, lng, polygon)
+    region, region_mode = _region_geometry(lat, lng, polygon)
     start_date, end_date = _date_window()
-    cache_key = ("polygon", str(polygon)[:500], start_date, end_date) if polygon else (round(lat, 5), round(lng, 5), start_date, end_date)
+    cache_key = ("polygon", str(polygon)[:1000], start_date, end_date) if polygon else (round(lat, 5), round(lng, 5), start_date, end_date)
     with _cache_lock:
         cached = _coord_cache.get(cache_key)
     if cached:
         return cached.copy()
-
     with ThreadPoolExecutor(max_workers=7) as pool:
         f_idx = pool.submit(_fetch_s2_indices, lat, lng, polygon)
         f_rain = pool.submit(_fetch_rainfall, lat, lng, polygon)
@@ -274,7 +280,6 @@ def fetch_farm_data(lat: float, lng: float, polygon: Optional[dict] = None) -> D
         air_temperature = f_air.result()
         deep_soil_moisture = f_soil.result()
         meta = f_meta.result()
-
     result = {
         "ndvi": round(ndvi, 6) if ndvi is not None else None,
         "ndmi": round(ndmi, 6) if ndmi is not None else None,

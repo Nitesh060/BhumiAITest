@@ -110,12 +110,32 @@ except Exception:
 
 @app.before_request
 def _ensure_ee_init():
+    """Best-effort Earth Engine init before each request.
+
+    This used to `raise` here for EVERY request except /health, which meant
+    ANY Earth Engine problem (bad/missing credentials, quota, a slow cold
+    start) took down the entire API — including endpoints that never touch
+    satellite data at all: /report/pdf (lays out an already-computed JSON
+    payload), /glossary, /mandi-price, /major-crops, /auth/*, all farm
+    management CRUD, /insurance-claim, /credit-intelligence, /admin/*,
+    /portfolio/summary, /audit-log, consent and loan endpoints. That's why
+    "PDF report generate nahi ho pa raha" could happen even though PDF
+    generation itself never calls Earth Engine.
+
+    The actual satellite-backed endpoints (/calculate, /spectral,
+    /crop-intelligence, /historical-timeline, etc.) already call Earth
+    Engine functions inside their own try/except and return a clear
+    502/503 JSON error if that fails — same fail-soft pattern used
+    throughout this codebase (see the per-parameter _safe()/_safe_score_fetch()
+    wrappers in compute_farmscore). So we no longer need a hard app-wide
+    gate here: log the failure and let the request proceed; only routes
+    that genuinely need Earth Engine will be affected, and they already
+    report that clearly to their caller.
+    """
     try:
         initialise_earth_engine()
     except Exception as exc:
-        logger.error("Earth Engine init failed: %s", exc)
-        if request.endpoint != "health_check":
-            raise
+        logger.error("Earth Engine init failed (non-fatal for this request): %s", exc)
 
 
 @app.route("/health", methods=["GET"])

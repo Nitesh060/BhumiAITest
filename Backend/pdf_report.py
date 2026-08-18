@@ -143,6 +143,24 @@ def _table(rows, widths, s, header=True):
     return t
 
 
+def _water_body_label(water: Dict[str, Any]) -> str:
+    """nearest_water_body only ever returns water_present / water_pixels_within_2km
+    (a satellite presence/extent signal, by design — see enrichment_service.py's
+    fetch_nearest_water_body_signal docstring) — it never returns a road-network
+    "distance". The report used to look for distance_km/distance keys that don't
+    exist and always fell back to "Not available", hiding real data. Read the
+    fields that are actually returned instead.
+    """
+    if not water:
+        return "Not available"
+    if water.get("water_present") is True:
+        px = water.get("water_pixels_within_2km")
+        return f"Surface water detected within 2 km ({px} px)" if px is not None else "Surface water detected within 2 km"
+    if water.get("water_present") is False:
+        return "No surface water detected within 2 km"
+    return "Not available"
+
+
 def _score_page(data, s):
     score = _score(data.get("score"))
     grade = data.get("grade") or "Poor"
@@ -297,8 +315,7 @@ def _water_page(data, s):
     gw = data.get("groundwater_trend") or e.get("groundwater_trend") or {}
     summary = [
         ["ITEM", "VALUE"],
-        ["Nearest Water Body", water.get("distance_km") or water.get("distance") or "Not available"],
-        ["Water Present", "Present" if water.get("water_present") else ("Not detected" if water.get("water_present") is False else "Not available")],
+        ["Nearest Water Body", _water_body_label(water)],
         ["Groundwater Trend", "Available" if gw else "Not available"],
     ]
     story += [_table(summary, [60 * mm, 114 * mm], s), Spacer(1, 4)]
@@ -319,7 +336,7 @@ def _regional_page(data, s):
 
     rows = [
         ["PARAMETER", "VALUE"],
-        ["Nearest Water Body", water.get("distance_km") or water.get("distance") or "Not available"],
+        ["Nearest Water Body", _water_body_label(water)],
         ["Drought Years", ", ".join(map(str, drought.get("drought_years", [])[:12])) or "None detected / not available"],
         ["Nearby Population Proxy", pop.get("estimated_population") or "Not available"],
         ["Ambient Temperature", f"{temp.get('min_c')} C - {temp.get('max_c')} C" if temp.get("min_c") is not None else "Not available"],

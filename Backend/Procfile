@@ -1,1 +1,1 @@
-web: gunicorn wsgi_render:application --workers 2 --threads 2 --timeout 120 --worker-tmp-dir /dev/shm
+web: gunicorn wsgi_render:application --workers 1 --threads 2 --timeout 300 --worker-tmp-dir /dev/shm

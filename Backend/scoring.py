@@ -2,7 +2,7 @@
 
 The score uses the transparent 20-parameter comprehensive model. Groundwater
 is intentionally not a score input. Air temperature is only accepted from a
-real 2 m air-temperature field; MODIS LST is kept separate.
+real 2 m air-temperature field; MODIS LST remains separate.
 """
 from __future__ import annotations
 import logging
@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 from comprehensive_score_service import compute_comprehensive_score, PARAMETER_LABELS, DEFAULT_GRADE
 logger = logging.getLogger(__name__)
 _UNITS = {"ndvi":"","evi":"","savi":"","msavi":"","ndre":"","ndmi":"","ndwi":"","ci_green":"","ci_rededge":"","vv":" dB","vh":" dB","vh_vv":"","rvi":"","rainfall":" mm/day","air_temp":"°C","solar_radiation":" MJ/m²/day","spi":"","spei":"","gdd":" GDD-units","lst":"°C"}
-_SOURCES = {"ndvi":"Sentinel-2","evi":"Sentinel-2","savi":"Sentinel-2","msavi":"Sentinel-2","ndre":"Sentinel-2 Red Edge","ndmi":"Sentinel-2","ndwi":"Sentinel-2","ci_green":"Sentinel-2","ci_rededge":"Sentinel-2","vv":"Sentinel-1 SAR","vh":"Sentinel-1 SAR","vh_vv":"Sentinel-1 SAR","rvi":"Sentinel-1 SAR","rainfall":"CHIRPS","air_temp":"ERA5-Land 2m Air Temperature","solar_radiation":"ERA5-Land","spi":"CHIRPS","spei":"CHIRPS + MODIS (Thornthwaite proxy)","gdd":"ERA5-Land 2m Air Temperature","lst":"MODIS LST"}
+_SOURCES = {"ndvi":"Sentinel-2","evi":"Sentinel-2","savi":"Sentinel-2","msavi":"Sentinel-2","ndre":"Sentinel-2 Red Edge","ndmi":"Sentinel-2","ndwi":"Sentinel-2","ci_green":"Sentinel-2","ci_rededge":"Sentinel-2","vv":"Sentinel-1 SAR","vh":"Sentinel-1 SAR","vh_vv":"Sentinel-1 SAR","rvi":"Sentinel-1 SAR","rainfall":"CHIRPS","air_temp":"ERA5-Land 2m Air Temperature","solar_radiation":"ERA5-Land","spi":"CHIRPS","spei":"CHIRPS + MODIS (Thornthwaite proxy)","gdd":"MODIS LST","lst":"MODIS LST"}
 
 def calculate_score(raw_values: Dict[str, Optional[float]], weights: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     normalized = dict(raw_values)

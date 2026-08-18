@@ -21,7 +21,7 @@
 
 const API_BASE_URL =
     window.FARMSCORE_API_URL ||
-    "https://farmprototype.onrender.com";
+    "https://bhumiaitest.onrender.com";
 
 async function calculateFarmScore(lat, lng) {
     const url = `${API_BASE_URL}/calculate`;
@@ -665,6 +665,32 @@ const PARAM_LABELS = {
     lst: "Land Surface Temp.",
 };
 
+// What each of the 20 FarmScore parameters actually means — shown as a
+// hover tooltip (ⓘ) on every parameter card so a value is never just a
+// number with no context. Mirrors Backend/glossary.py's explanations.
+const PARAM_MEANINGS = {
+    ndvi: "Vegetation greenness/health from satellite bands. Higher = healthier, denser plant growth.",
+    evi: "Like NDVI but corrected for haze and soil background, so it stays accurate in dense canopy. Higher = healthier vegetation.",
+    savi: "A vegetation index that reduces the influence of visible soil in the background — useful for young/sparse crops. Higher = healthier vegetation.",
+    msavi: "A self-adjusting version of SAVI for soil brightness. Higher = healthier vegetation.",
+    ndre: "Red-edge based index, more sensitive to canopy nitrogen/chlorophyll than NDVI. Higher = better nitrogen status.",
+    ndmi: "Moisture content in plant canopy. Higher = more water in the crop/vegetation.",
+    ndwi: "Detects surface water presence (ponds, flooding, waterlogging).",
+    ci_green: "Leaf chlorophyll content estimated from the green band. Higher = more chlorophyll.",
+    ci_rededge: "Leaf chlorophyll content from the red-edge band — more sensitive at higher biomass. Higher = more chlorophyll.",
+    vv: "Sentinel-1 radar signal strength (dB) reflected from the field. Sensitive to canopy structure/moisture; works through clouds.",
+    vh: "Cross-polarized radar signal (dB), especially sensitive to crop volume/biomass. Works through clouds.",
+    vh_vv: "Ratio of VH to VV radar signals — separates vegetation structure from soil/surface effects.",
+    rvi: "Vegetation-density index computed purely from radar (VV/VH) — usable even under cloud cover.",
+    rainfall: "Mean daily rainfall (mm/day) for the growing season. Too little stresses the crop; too much risks waterlogging.",
+    air_temp: "Ambient air temperature — currently sourced from the same MODIS LST signal as Land Surface Temp, shown for reference (not separately weighted, to avoid double-counting).",
+    solar_radiation: "Average daily incoming solar energy (MJ/m²/day) — a key driver of photosynthesis and growth rate.",
+    spi: "Compares current rainfall to the historical average for this location — flags drought or unusually wet conditions.",
+    spei: "Like SPI, but also accounts for temperature-driven water loss — catches heat-driven moisture stress.",
+    gdd: "Accumulated heat units this season — gauges whether crop development is on track, behind, or heat-stressed.",
+    lst: "Temperature of the land surface itself (not air), measured from thermal satellite bands.",
+};
+
 const PARAM_ICONS = {
     ndvi: "🌿", evi: "🌳", savi: "🌾", msavi: "🌾", ndre: "🍃", ndmi: "🌱", ndwi: "💧",
     ci_green: "🟢", ci_rededge: "🔴",
@@ -730,9 +756,9 @@ function renderResult(data) {
         const unit = c.unit ? ` ${c.unit}` : "";
         const availability = c.data_available ? "" : `<span class="p-nodata">⚠ no data</span>`;
 
-        let extraTitle = "";
+        let extraTitle = PARAM_MEANINGS[key] || "";
         if (key === "rainfall" && data.rainfall_monthly && data.rainfall_monthly.length) {
-            extraTitle = "Monthly breakdown: " + data.rainfall_monthly
+            extraTitle += " Monthly breakdown: " + data.rainfall_monthly
                 .map(m => `${m.month} ${m.mm_per_day != null ? m.mm_per_day.toFixed(1) : "—"} mm/day`)
                 .join(", ");
         }

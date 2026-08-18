@@ -20,7 +20,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from comprehensive_score_service import compute_comprehensive_score, PARAMETER_LABELS
+from comprehensive_score_service import (
+    compute_comprehensive_score,
+    PARAMETER_LABELS,
+    DEFAULT_GRADE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,22 +45,6 @@ _SOURCES = {
     "rainfall": "CHIRPS", "air_temp": "MODIS LST", "solar_radiation": "ERA5-Land",
     "spi": "CHIRPS", "spei": "CHIRPS + MODIS (Thornthwaite proxy)", "gdd": "MODIS LST", "lst": "MODIS LST",
 }
-
-DEFAULT_GRADE = "Poor"
-GRADE_BANDS = [
-    (781, "Excellent"),
-    (661, "Good"),
-    (541, "Average"),
-    (421, "Fair"),
-]
-
-
-def _assign_grade(final_score: int) -> str:
-    for threshold, label in GRADE_BANDS:
-        if final_score >= threshold:
-            return label
-    return DEFAULT_GRADE
-
 
 def calculate_score(raw_values: Dict[str, Optional[float]], weights: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     """raw_values: dict with any subset of the 20 keys from
@@ -79,7 +67,7 @@ def calculate_score(raw_values: Dict[str, Optional[float]], weights: Optional[Di
         }
 
     final_score = comp_result["score_300_900"]
-    grade = _assign_grade(final_score)
+    grade = comp_result["grade"]
 
     components = {}
     for key, c in comp_result["components"].items():

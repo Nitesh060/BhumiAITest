@@ -928,6 +928,11 @@ body {
     border-bottom: none;
 }
 
+.nr-icon {
+    text-align: center;
+    font-size: 0.82rem;
+}
+
 .nr-label {
     color: var(--text-muted);
     white-space: nowrap;
@@ -945,6 +950,18 @@ body {
 .nr-notfound {
     color: var(--text-dim);
     font-size: 0.6rem;
+}
+
+.nr-retry {
+    color: var(--primary);
+    font-weight: 600;
+    text-decoration: none;
+    margin-left: 4px;
+    white-space: nowrap;
+}
+
+.nr-retry:hover {
+    text-decoration: underline;
 }
 
 /* ---------------------------------------------------------------------- */

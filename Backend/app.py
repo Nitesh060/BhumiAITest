@@ -171,9 +171,18 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
     def _safe_score_fetch(name, fn, *args):
         try:
             return name, fn(*args)
-        except Exception:
+        except Exception as exc:
+            # Previously this discarded the exception entirely (returned
+            # None), which is how solar/spi/spei could come back with
+            # data_available=False but an EMPTY data_reasons — the actual
+            # error (e.g. an Earth Engine exception thrown outside that
+            # function's own try/except) never reached the response or the
+            # per-component tooltip, only a full traceback in server logs.
+            # Returning a reason-shaped dict here guarantees the frontend
+            # always has *something* to show, regardless of where inside
+            # the fetch function the failure happened.
             logger.exception("compute_farmscore sub-fetch '%s' failed (non-fatal)", name)
-            return name, None
+            return name, {"available": False, "reason": f"{name} fetch raised {type(exc).__name__}: {exc}"}
 
     with _TPE_SCORE(max_workers=2) as score_pool:
         score_futures = [
@@ -228,23 +237,42 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
     # weather-index fetch already computes a human-readable reason when it
     # fails; previously that reason was only logged server-side and the
     # frontend just saw "no data" with no explanation. Attach it to the
-    # matching component so the frontend can show it (e.g. as a tooltip). ----
+    # matching component so the frontend can show it (e.g. as a tooltip).
+    #
+    # IMPORTANT: this always writes an entry for every unavailable param,
+    # never only when a "reason" string happens to exist. A None/None case
+    # (component unavailable but no reason string) is itself a bug signal —
+    # showing that explicitly (instead of silently skipping it, which is
+    # what produced an empty {} in an earlier version of this patch) is
+    # what lets us actually find where the reason is getting lost. ----
+    def _reason_for(available: bool, reason: Optional[str], raw_dump: Any) -> Optional[str]:
+        if available:
+            return None
+        return reason or f"Unavailable, no error captured by the fetch function itself — raw service response was: {raw_dump!r}"
+
     data_reasons = {}
-    if satellite_data.get("rainfall") is None and satellite_data.get("rainfall_reason"):
-        data_reasons["rainfall"] = satellite_data["rainfall_reason"]
-    if not solar.get("available") and solar.get("reason"):
-        data_reasons["solar_radiation"] = solar["reason"]
-    if not spi.get("available") and spi.get("reason"):
-        data_reasons["spi"] = spi["reason"]
-    if not spei.get("available") and spei.get("reason"):
-        data_reasons["spei"] = spei["reason"]
-    if not gdd.get("available") and gdd.get("reason"):
-        data_reasons["gdd"] = gdd["reason"]
+    if satellite_data.get("rainfall") is None:
+        data_reasons["rainfall"] = satellite_data.get("rainfall_reason") or (
+            f"Unavailable, no error captured — rainfall_reason field itself was None/missing."
+        )
+    r = _reason_for(bool(solar.get("available")), solar.get("reason"), solar)
+    if r:
+        data_reasons["solar_radiation"] = r
+    r = _reason_for(bool(spi.get("available")), spi.get("reason"), spi)
+    if r:
+        data_reasons["spi"] = r
+    r = _reason_for(bool(spei.get("available")), spei.get("reason"), spei)
+    if r:
+        data_reasons["spei"] = r
+    r = _reason_for(bool(gdd.get("available")), gdd.get("reason"), gdd)
+    if r:
+        data_reasons["gdd"] = r
     for key, reason in data_reasons.items():
         if key in result.get("components", {}):
             result["components"][key]["unavailable_reason"] = reason
     if data_reasons:
         logger.warning("compute_farmscore data_reasons lat=%.5f lng=%.5f: %s", lat, lng, data_reasons)
+
 
     crop_result = recommend_crop(
         satellite_data.get("ndvi"),

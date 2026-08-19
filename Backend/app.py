@@ -175,7 +175,7 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
             logger.exception("compute_farmscore sub-fetch '%s' failed (non-fatal)", name)
             return name, None
 
-    with _TPE_SCORE(max_workers=3) as score_pool:
+    with _TPE_SCORE(max_workers=2) as score_pool:
         score_futures = [
             score_pool.submit(_safe_score_fetch, "extended_indices", fetch_extended_indices, lat, lng, polygon),
             score_pool.submit(_safe_score_fetch, "spectral", calculate_spectral_intelligence, lat, lng, polygon),
@@ -307,7 +307,7 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
             logger.exception("Enrichment '%s' failed (non-fatal)", name)
             return name, None
 
-    with _TPE(max_workers=4) as pool:
+    with _TPE(max_workers=2) as pool:
         futures = [
             pool.submit(_safe, "soil_type", fetch_soil_type, lat, lng, polygon),
             pool.submit(_safe, "adjacent_land_cover", fetch_adjacent_land_cover, lat, lng, polygon),

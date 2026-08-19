@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta, datetime, timezone
 from pathlib import Path
@@ -138,15 +139,45 @@ def _filter_growing_season(collection: ee.ImageCollection) -> ee.ImageCollection
     return _filter_season(collection)
 
 
+def _getinfo_with_backoff(ee_computed_object, max_attempts: int = 3, base_delay_s: float = 1.5):
+    """Call ``.getInfo()`` with a couple of retries + short backoff.
+
+    Without this, a single dropped/rate-limited request ANYWHERE in a
+    multi-call chain gets silently converted to "no data" by the
+    caller's except block, with no retry at all. This matters a lot for
+    the weather-index parameters specifically: SPI alone fires 5
+    sequential reduceRegion().getInfo() calls (one per history year),
+    SPEI fires 2 (rain + temp) — all funneled through the same 2-worker
+    thread pool in app.py alongside 3 other concurrent Earth-Engine
+    tasks (extended_indices, spectral, sar). That's a lot of concurrent
+    requests hitting Earth Engine at once, so a transient 429/timeout on
+    any single one of those calls is much more likely than for the
+    single-call parameters (NDVI, GDD, LST) — and previously, any one
+    such blip was enough to make that whole parameter report "no data",
+    with the real cause never even logged for CHIRPS calls (see
+    `_season_rainfall_mm`, now fixed to log too).
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(max_attempts):
+        try:
+            return ee_computed_object.getInfo()
+        except Exception as exc:  # noqa: BLE001 - genuinely want to retry any transient EE/network error
+            last_exc = exc
+            if attempt < max_attempts - 1:
+                time.sleep(base_delay_s * (attempt + 1))
+    raise last_exc
+
+
 def _reduce_mean(image: ee.Image, region: ee.Geometry, scale: int, best_effort: bool = True, tile_scale: int = 4) -> Optional[float]:
-    result = image.reduceRegion(
+    reduced = image.reduceRegion(
         reducer=ee.Reducer.mean(),
         geometry=region,
         scale=scale,
         maxPixels=1e9,
         bestEffort=best_effort,
         tileScale=tile_scale,
-    ).getInfo() or {}
+    )
+    result = _getinfo_with_backoff(reduced) or {}
     for value in result.values():
         if value is not None:
             return float(value)
@@ -190,7 +221,7 @@ def _reduce_mean_with_retry(
     lng: float,
     polygon: Optional[dict],
     scale: float,
-    max_retries: int = 2,
+    max_retries: int = 3,
 ) -> Optional[float]:
     """Like ``_reduce_mean`` but builds a scale-aware region (see
     ``_scaled_region``) and, if that first attempt still comes back empty
@@ -205,7 +236,7 @@ def _reduce_mean_with_retry(
     attempt = 0
     while value is None and attempt < max_retries:
         attempt += 1
-        region = _scaled_region(lat, lng, polygon, scale, extra_buffer_m=scale * attempt)
+        region = _scaled_region(lat, lng, polygon, scale, extra_buffer_m=scale * attempt * 2)
         value = _reduce_mean(image, region, scale)
     return value
 
@@ -270,20 +301,30 @@ def _fetch_rainfall_detailed(lat: float, lng: float, polygon: Optional[dict]) ->
     # ee.Reducer.mean() silently returns null — see _scaled_region().
     filter_region, _ = _region_geometry(lat, lng, polygon)
     year = _latest_completed_climate_year()
-    start, end = _completed_climate_window(year)
+    last_reason: Optional[str] = None
     try:
-        c = (ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
-             .filterDate(start, end)
-             .filterBounds(filter_region)
-             .select("precipitation"))
-        if c.size().getInfo() == 0:
-            return None, f"No CHIRPS scenes found for {start} to {end} at this location."
-        # CHIRPS precipitation is mm/day. Mean over the completed
-        # Jun-Oct season therefore remains a mean daily rainfall value.
-        value = _reduce_mean_with_retry(c.mean(), lat, lng, polygon, CHIRPS_SCALE_M)
-        if value is None:
-            return None, f"CHIRPS reduceRegion returned no value for {start} to {end} (likely a data gap for this exact window)."
-        return value, None
+        # Try the latest completed season first; if that specific window
+        # comes back empty (a real data gap for those exact dates, not a
+        # pixel-coverage issue — buffer widening in
+        # _reduce_mean_with_retry already handles that), fall back one
+        # year earlier instead of reporting "no data" outright.
+        for candidate_year in (year, year - 1):
+            start, end = _completed_climate_window(candidate_year)
+            c = (ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
+                 .filterDate(start, end)
+                 .filterBounds(filter_region)
+                 .select("precipitation"))
+            if _getinfo_with_backoff(c.size()) == 0:
+                last_reason = f"No CHIRPS scenes found for {start} to {end} at this location."
+                continue
+            # CHIRPS precipitation is mm/day. Mean over the completed
+            # Jun-Oct season therefore remains a mean daily rainfall value.
+            value = _reduce_mean_with_retry(c.mean(), lat, lng, polygon, CHIRPS_SCALE_M)
+            if value is None:
+                last_reason = f"CHIRPS reduceRegion returned no value for {start} to {end} (likely a data gap for this exact window)."
+                continue
+            return value, None
+        return None, last_reason
     except Exception as exc:
         logger.exception("Rainfall fetch failed")
         return None, f"Rainfall fetch failed: {type(exc).__name__}: {exc}"

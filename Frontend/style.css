@@ -814,6 +814,7 @@ body {
 .p-nodata {
     color: var(--danger);
     margin-left: 4px;
+    cursor: help;
 }
 
 /* ---------------------------------------------------------------------- */

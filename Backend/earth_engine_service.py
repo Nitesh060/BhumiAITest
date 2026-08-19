@@ -259,7 +259,11 @@ ERA5_LAND_SCALE_M = 11132
 GLDAS_SCALE_M = 27830
 
 
-def _fetch_rainfall(lat: float, lng: float, polygon: Optional[dict]) -> Optional[float]:
+def _fetch_rainfall_detailed(lat: float, lng: float, polygon: Optional[dict]) -> Tuple[Optional[float], Optional[str]]:
+    """Same as ``_fetch_rainfall`` but also returns a human-readable reason
+    string when the value comes back None, so callers (app.py) can surface
+    *why* a parameter was unavailable instead of silently dropping it.
+    """
     # CHIRPS's native grid is ~5.5km/pixel. filterBounds() only needs the
     # bare point/polygon to find overlapping tiles, but the reduceRegion()
     # geometry must be buffered out to (at least) that pixel scale or
@@ -273,13 +277,21 @@ def _fetch_rainfall(lat: float, lng: float, polygon: Optional[dict]) -> Optional
              .filterBounds(filter_region)
              .select("precipitation"))
         if c.size().getInfo() == 0:
-            return None
+            return None, f"No CHIRPS scenes found for {start} to {end} at this location."
         # CHIRPS precipitation is mm/day. Mean over the completed
         # Jun-Oct season therefore remains a mean daily rainfall value.
-        return _reduce_mean_with_retry(c.mean(), lat, lng, polygon, CHIRPS_SCALE_M)
-    except Exception:
+        value = _reduce_mean_with_retry(c.mean(), lat, lng, polygon, CHIRPS_SCALE_M)
+        if value is None:
+            return None, f"CHIRPS reduceRegion returned no value for {start} to {end} (likely a data gap for this exact window)."
+        return value, None
+    except Exception as exc:
         logger.exception("Rainfall fetch failed")
-        return None
+        return None, f"Rainfall fetch failed: {type(exc).__name__}: {exc}"
+
+
+def _fetch_rainfall(lat: float, lng: float, polygon: Optional[dict]) -> Optional[float]:
+    value, _ = _fetch_rainfall_detailed(lat, lng, polygon)
+    return value
 
 
 def _fetch_rainfall_monthly(lat: float, lng: float, polygon: Optional[dict]) -> list:
@@ -368,14 +380,14 @@ def fetch_farm_data(lat: float, lng: float, polygon: Optional[dict] = None) -> D
         return cached.copy()
     with ThreadPoolExecutor(max_workers=4) as pool:
         f_idx = pool.submit(_fetch_s2_indices, lat, lng, polygon)
-        f_rain = pool.submit(_fetch_rainfall, lat, lng, polygon)
+        f_rain = pool.submit(_fetch_rainfall_detailed, lat, lng, polygon)
         f_month = pool.submit(_fetch_rainfall_monthly, lat, lng, polygon)
         f_lst = pool.submit(_fetch_lst, lat, lng, polygon)
         f_air = pool.submit(_fetch_air_temperature, lat, lng, polygon)
         f_soil = pool.submit(_fetch_deep_soil_moisture, lat, lng, polygon)
         f_meta = pool.submit(_fetch_s2_meta, lat, lng, polygon)
         ndvi, ndmi, ndwi = f_idx.result()
-        rainfall = f_rain.result()
+        rainfall, rainfall_reason = f_rain.result()
         rainfall_monthly = f_month.result()
         lst = f_lst.result()
         air_temperature = f_air.result()
@@ -386,6 +398,7 @@ def fetch_farm_data(lat: float, lng: float, polygon: Optional[dict] = None) -> D
         "ndmi": round(ndmi, 6) if ndmi is not None else None,
         "ndwi": round(ndwi, 6) if ndwi is not None else None,
         "rainfall": round(rainfall, 4) if rainfall is not None else None,
+        "rainfall_reason": rainfall_reason if rainfall is None else None,
         "rainfall_monthly": rainfall_monthly,
         "temperature": round(lst, 4) if lst is not None else None,
         "lst": round(lst, 4) if lst is not None else None,

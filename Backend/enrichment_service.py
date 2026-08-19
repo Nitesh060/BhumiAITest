@@ -141,7 +141,7 @@ def fetch_cropping_history(lat: float, lng: float, polygon: Optional[dict] = Non
 
 def fetch_drought_instances(lat: float, lng: float, start_year: int=2000, buffer_m: int=25000) -> Dict[str, Any]:
     region=_buffered_region(lat,lng,buffer_m)
-    chirps=ee.ImageCollection("UCSB-CHC/CHIRPS/V3/DAILY_SAT")
+    chirps=ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
     years=list(range(start_year,datetime.utcnow().year))
     try:
         vals=[]

@@ -370,6 +370,51 @@ async function fetchWeather(lat, lng) {
    Nearby Resources (real OSM data via the free Overpass API)
    =================================================================== */
 
+/* Overpass's main public instance (overpass-api.de) is a free, shared,
+   community-run service — it's had real outages (full connect timeouts,
+   no HTTP response at all) and enforces per-IP rate limits. A bare,
+   unguarded fetch() to it can hang or fail for reasons that have
+   nothing to do with this app. Give every query a hard timeout and one
+   fallback mirror before giving up. */
+const OVERPASS_ENDPOINTS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+];
+const OVERPASS_TIMEOUT_MS = 15000;
+
+async function overpassQuery(query, endpoint) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
+    try {
+        const res = await fetch(endpoint, {
+            method: "POST",
+            body: "data=" + encodeURIComponent(query),
+            signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`Overpass responded ${res.status} (${endpoint})`);
+        return await res.json();
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+/** Tries each Overpass mirror in turn (only 2 — this data is a "nice to
+ * have" sidebar, not worth hammering every known mirror) until one
+ * responds, instead of failing the whole card on the first endpoint's
+ * bad day. */
+async function overpassQueryWithFallback(query) {
+    let lastErr;
+    for (const endpoint of OVERPASS_ENDPOINTS) {
+        try {
+            return await overpassQuery(query, endpoint);
+        } catch (err) {
+            lastErr = err;
+            console.warn(`Overpass endpoint failed (${endpoint}), trying next if any:`, err);
+        }
+    }
+    throw lastErr;
+}
+
 const NODE_RESOURCE_TYPES = [
     { tag: `node["amenity"="bank"]`,        icon: "🏦", label: "Bank Branch" },
     { tag: `way["power"="substation"]`,     icon: "⚡", label: "Power Substation" },
@@ -415,11 +460,7 @@ async function fetchNearestNodes(lat, lng, radius) {
     const clauses = NODE_RESOURCE_TYPES.map(t => `${t.tag}(around:${radius},${lat},${lng});`).join("\n");
     const query = `[out:json][timeout:25];(${clauses});out center;`;
 
-    const res = await fetch("https://overpass-api.de/api/interpreter", {
-        method: "POST",
-        body: "data=" + encodeURIComponent(query),
-    });
-    const data = await res.json();
+    const data = await overpassQueryWithFallback(query);
     const elements = data.elements || [];
     const origin = [lng, lat];
 
@@ -450,11 +491,7 @@ async function fetchNearestWays(lat, lng, radius) {
     const clauses = WAY_RESOURCE_TYPES.map(t => `${t.tag}(around:${radius},${lat},${lng});`).join("\n");
     const query = `[out:json][timeout:25];(${clauses});out geom;`;
 
-    const res = await fetch("https://overpass-api.de/api/interpreter", {
-        method: "POST",
-        body: "data=" + encodeURIComponent(query),
-    });
-    const data = await res.json();
+    const data = await overpassQueryWithFallback(query);
     const elements = data.elements || [];
     const origin = [lng, lat];
 
@@ -485,10 +522,16 @@ async function fetchNearestWays(lat, lng, radius) {
     return nearest;
 }
 
+let _nearbyResourcesRequestId = 0;
+
 async function fetchNearbyResources(lat, lng) {
     const section = document.getElementById("nearby-resources-card");
     const list = document.getElementById("nearby-resources-list");
     const accessEl = document.getElementById("accessibility-value");
+
+    const requestId = ++_nearbyResourcesRequestId;
+    section.style.display = "block";
+    list.innerHTML = `<p class="empty-hint">Checking nearby resources…</p>`;
 
     const nodeRadius = 25000; // 25 km — rural amenities are often sparse
     const wayRadius = 15000;  // 15 km — roads/canals are usually much closer
@@ -501,6 +544,10 @@ async function fetchNearbyResources(lat, lng) {
         fetchNearestWays(lat, lng, wayRadius),
     ]);
 
+    // A newer call for a different location finished first (or this one
+    // just took a while) — don't clobber whatever it already rendered.
+    if (requestId !== _nearbyResourcesRequestId) return;
+
     const distances = {
         ...(nodeResult.status === "fulfilled" ? nodeResult.value : {}),
         ...(wayResult.status === "fulfilled" ? wayResult.value : {}),
@@ -510,7 +557,24 @@ async function fetchNearbyResources(lat, lng) {
     if (wayResult.status === "rejected") console.error("Nearby ways fetch failed:", wayResult.reason);
 
     if (nodeResult.status === "rejected" && wayResult.status === "rejected") {
-        section.style.display = "none";
+        // Previously this hid the whole card (section.style.display =
+        // "none"), which is indistinguishable from the feature not
+        // existing at all. OpenStreetMap's free Overpass API is a
+        // shared public service that does go down / rate-limit
+        // (confirmed outages, not hypothetical) — when that happens the
+        // right move is to say so and offer a retry, not disappear.
+        list.innerHTML = `
+            <p class="empty-hint">
+                Couldn't reach OpenStreetMap's live map data service just now — it may be busy or briefly down.
+                <a href="#" class="nr-retry" id="nearby-retry-link">Try again</a>
+            </p>`;
+        const retryLink = document.getElementById("nearby-retry-link");
+        if (retryLink) {
+            retryLink.addEventListener("click", (e) => {
+                e.preventDefault();
+                fetchNearbyResources(lat, lng);
+            });
+        }
         return;
     }
 

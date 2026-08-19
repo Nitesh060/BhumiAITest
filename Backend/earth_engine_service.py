@@ -194,7 +194,7 @@ def _fetch_rainfall(lat: float, lng: float, polygon: Optional[dict]) -> Optional
     year = _latest_completed_climate_year()
     start, end = _completed_climate_window(year)
     try:
-        c = (ee.ImageCollection("UCSB-CHC/CHIRPS/V3/DAILY_SAT")
+        c = (ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
              .filterDate(start, end)
              .filterBounds(region)
              .select("precipitation"))
@@ -214,7 +214,7 @@ def _fetch_rainfall_monthly(lat: float, lng: float, polygon: Optional[dict]) -> 
     out = []
     for month, label in zip((6, 7, 8, 9, 10), ("Jun", "Jul", "Aug", "Sep", "Oct")):
         try:
-            c = (ee.ImageCollection("UCSB-CHC/CHIRPS/V3/DAILY_SAT")
+            c = (ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
                  .filterDate(f"{year}-{month:02d}-01", f"{year}-{month + 1:02d}-01" if month < 10 else f"{year + 1}-01-01")
                  .filterBounds(region)
                  .select("precipitation"))

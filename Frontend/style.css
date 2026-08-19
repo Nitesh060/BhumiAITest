@@ -24,6 +24,7 @@
     --radius: 12px;
     --radius-sm: 8px;
     --shadow: 0 16px 40px -18px rgba(0, 0, 0, 0.55);
+    --shadow-sm: 0 6px 16px -8px rgba(0, 0, 0, 0.45);
 
     --font-display: "Space Mono", monospace;
     --font-body: "Sora", sans-serif;
@@ -735,6 +736,10 @@ body {
 
 .score-row.flash {
     background: var(--primary-tint);
+}
+
+.sr-body {
+    min-width: 0;
 }
 
 .params-grid > *:nth-child(1) { animation-delay: 0.02s; }
@@ -1917,6 +1922,575 @@ body {
 }
 
 /* ===================================================================
+   Main dashboard (index.html only) — hero, header status cards,
+   Calculate panel, Quick Insights, Key Land Indicators, footer pills.
+
+   This markup previously had NO base styling here at all — it relied
+   entirely on dashboard-light.css, a separate file injected at runtime
+   that reskinned it with ~40 hardcoded, mutually inconsistent green
+   shades and a loud multi-hue gradient background, all wired together
+   with `!important` (see git history / SATSOURCE_PARITY_CHANGES.md).
+   That's been retired; this section is the real, first-class styling,
+   built on the same tokens as the rest of the app so the dashboard
+   reads as one product rather than a patch on top of another one.
+   =================================================================== */
+
+.hero-intro {
+    display: grid;
+    grid-template-columns: minmax(280px, 0.9fr) minmax(420px, 1.1fr);
+    align-items: end;
+    gap: 20px;
+    padding: 6px 2px 4px;
+    flex: 0 0 auto;
+    animation: fadeInUp 0.4s ease both;
+}
+
+.hero-kicker {
+    font-family: var(--font-display);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--primary);
+    margin-bottom: 8px;
+}
+
+.hero-title {
+    font-family: var(--font-display);
+    font-size: clamp(1.7rem, 2.6vw, 2.5rem);
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+    margin: 0;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.hero-title span {
+    color: var(--primary);
+}
+
+.hero-subtitle {
+    margin: 12px 0 0;
+    font-size: 0.86rem;
+    line-height: 1.55;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.feature-strip {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(110px, 1fr));
+    gap: 10px;
+}
+
+.feature-chip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 13px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.feature-chip:hover {
+    border-color: var(--primary-dark);
+    transform: translateY(-1px);
+}
+
+.fc-icon {
+    width: 32px;
+    height: 32px;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9px;
+    background: var(--primary-tint);
+    color: var(--primary);
+    font-size: 0.9rem;
+}
+
+.feature-chip strong {
+    display: block;
+    font-size: 0.74rem;
+    line-height: 1.25;
+    color: var(--text);
+}
+
+.feature-chip span {
+    display: block;
+    font-size: 0.66rem;
+    color: var(--text-muted);
+    margin-top: 1px;
+}
+
+/* Top-bar status cards (weather / satellite / user) — the base
+   .search-wrap / .btn-detect / .topbar-spacer rules above already
+   theme correctly via var(), these are the pieces that were missing. */
+
+.header-weather,
+.header-satellite,
+.header-user {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    height: 42px;
+    padding: 0 13px;
+    border-radius: var(--radius);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.header-weather strong,
+.header-user strong {
+    display: block;
+    font-size: 0.76rem;
+    line-height: 1.2;
+}
+
+.header-weather span,
+.header-user span {
+    display: block;
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    line-height: 1.3;
+}
+
+.header-satellite {
+    font-family: var(--font-display);
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: var(--primary);
+    gap: 2px;
+}
+
+.header-satellite span {
+    display: block;
+    color: var(--primary);
+    font-weight: 700;
+}
+
+.header-satellite small {
+    font-family: var(--font-body);
+    font-weight: 400;
+    color: var(--text-muted);
+    font-size: 0.6rem;
+}
+
+.header-user {
+    gap: 10px;
+    cursor: default;
+}
+
+.header-avatar {
+    width: 26px;
+    height: 26px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--primary-tint);
+    color: var(--primary);
+    font-size: 0.6rem;
+}
+
+.weather-symbol {
+    font-size: 1.15rem;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Map panel — a little taller here; it's the visual anchor of the page   */
+/* ---------------------------------------------------------------------- */
+
+.dashboard-grid .map-panel {
+    height: clamp(360px, 46vh, 500px);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Bottom row — now a single full-width card (Key Land Indicators), not   */
+/* the fixed-height 3-column layout the base .bottom-row rule above was   */
+/* built for.                                                             */
+/* ---------------------------------------------------------------------- */
+
+.bottom-row {
+    height: auto;
+    display: block;
+}
+
+.farm-score-overview {
+    overflow: visible;
+}
+
+.farm-score-main {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    margin-bottom: 16px;
+}
+
+.large-score-ring {
+    width: 100px;
+    height: 100px;
+    flex: 0 0 100px;
+}
+
+.farm-score-label {
+    font-family: var(--font-display);
+    font-size: 0.98rem;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 6px;
+}
+
+.score-grade {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-family: var(--font-display);
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.coord-display {
+    display: block;
+    margin-top: 5px;
+    font-family: var(--font-display);
+    font-size: 0.68rem;
+    color: var(--text-muted);
+}
+
+.key-indicators-title {
+    font-family: var(--font-display);
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text);
+    padding-top: 14px;
+    margin-top: 2px;
+    border-top: 1px solid var(--border);
+}
+
+/* Key Land Indicators grid — scoped to #params-grid (the dashboard's
+   own indicator panel) only, so the Spectral Intelligence modal's
+   #spectral-params-grid — which shares the .params-grid / .score-row
+   class names but wants the original compact single-column list — is
+   completely unaffected. */
+
+#params-grid.params-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+}
+
+#params-grid .score-row {
+    grid-template-columns: 34px minmax(0, 1fr);
+    padding: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+#params-grid .score-row:hover {
+    border-color: var(--primary-dark);
+    box-shadow: var(--shadow-sm);
+    transform: translateY(-1px);
+}
+
+#params-grid .sr-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    font-size: 0.95rem;
+}
+
+#params-grid .sr-top {
+    flex-wrap: wrap;
+    row-gap: 4px;
+}
+
+#params-grid .sr-label {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    line-height: 1.3;
+}
+
+#params-grid .sr-status {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    font-weight: 700;
+}
+
+#params-grid .sr-meta {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+    line-height: 1.4;
+    margin-top: 6px;
+}
+
+@media (max-width: 1400px) {
+    #params-grid.params-grid { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+}
+
+/* ---------------------------------------------------------------------- */
+/* Calculate FarmScore panel                                             */
+/* ---------------------------------------------------------------------- */
+
+.farm-calc-card h2 {
+    font-family: var(--font-display);
+    font-size: 0.98rem;
+    font-weight: 700;
+    margin: 0 0 14px;
+    color: var(--text);
+}
+
+.calc-mode-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border-bottom: 1px solid var(--border);
+    margin: 0 0 14px;
+}
+
+.calc-mode-tabs button {
+    padding: 8px 4px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    color: var(--text-muted);
+    font-family: var(--font-body);
+    font-size: 0.74rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.calc-mode-tabs button.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+
+.calc-field {
+    margin-bottom: 12px;
+}
+
+.calc-field label {
+    display: block;
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+
+.calc-field input,
+.calc-field select {
+    width: 100%;
+    height: 38px;
+    padding: 0 11px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 0.8rem;
+    outline: none;
+    transition: border-color 0.15s ease;
+}
+
+.calc-field input:focus,
+.calc-field select:focus {
+    border-color: var(--primary);
+}
+
+.calc-row {
+    display: grid;
+    grid-template-columns: 1fr 104px;
+    gap: 8px;
+}
+
+.calc-primary {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    height: 44px;
+    background: var(--primary);
+    color: #ffffff;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-body);
+    font-weight: 700;
+    font-size: 0.82rem;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.12s ease;
+}
+
+.calc-primary:hover {
+    background: var(--primary-dark);
+}
+
+.calc-primary:active {
+    transform: scale(0.98);
+}
+
+.calc-note {
+    margin: 14px 0 0;
+    padding: 11px 12px;
+    background: var(--primary-tint);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    line-height: 1.55;
+}
+
+.selected-location-mini {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 12px;
+    padding: 10px 11px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.selected-location-mini strong {
+    font-size: 0.72rem;
+    color: var(--text);
+    font-family: var(--font-display);
+}
+
+.selected-location-mini span {
+    font-size: 0.64rem;
+    color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Quick Insights                                                         */
+/* ---------------------------------------------------------------------- */
+
+.quick-insights h3 {
+    margin: 0 0 6px;
+    font-family: var(--font-display);
+    font-size: 0.86rem;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.qi-row {
+    display: grid;
+    grid-template-columns: 22px 1fr auto;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.qi-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.qi-icon {
+    font-size: 0.9rem;
+    text-align: center;
+}
+
+.qi-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+
+.qi-value {
+    font-family: var(--font-display);
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--text);
+    text-align: right;
+}
+
+.qi-value.success {
+    color: var(--primary);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Data footer pills                                                      */
+/* ---------------------------------------------------------------------- */
+
+.data-footer-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    flex: 0 0 auto;
+}
+
+.data-pill {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 12px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.dp-icon {
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    background: var(--primary-tint);
+    color: var(--primary);
+    font-size: 0.85rem;
+}
+
+.data-pill strong {
+    display: block;
+    font-size: 0.68rem;
+    color: var(--text);
+}
+
+.data-pill span {
+    display: block;
+    font-size: 0.63rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+@media (max-width: 1100px) {
+    .hero-intro { grid-template-columns: 1fr; }
+    .dashboard-grid { grid-template-columns: minmax(0, 1fr) 300px; }
+    .header-weather { display: none; }
+}
+
+@media (max-width: 900px) {
+    .dashboard-grid { grid-template-columns: 1fr; }
+    .data-footer-grid { grid-template-columns: 1fr 1fr; }
+    #params-grid.params-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+}
+
+@media (max-width: 640px) {
+    .feature-strip { grid-template-columns: 1fr 1fr; }
+    .data-footer-grid { grid-template-columns: 1fr; }
+    .header-weather, .header-satellite { display: none; }
+    #params-grid.params-grid { grid-template-columns: 1fr 1fr; }
+}
+
+/* ===================================================================
    Light theme (toggle via data-theme="light" on <html>)
    =================================================================== */
 html[data-theme="light"] {
@@ -1924,16 +2498,22 @@ html[data-theme="light"] {
     --bg-deep: #e9efeb;
     --surface: #ffffff;
     --surface-2: #f0f4f1;
-    --border: #d8e2dc;
+    --border: #dde6e0;
     --text: #16221b;
     --text-muted: #55665c;
     --text-dim: #8a998f;
 
-    --primary: #1a9850;
-    --primary-dark: #0f7a3d;
-    --primary-tint: rgba(26, 152, 80, 0.10);
+    --primary: #128a4c;
+    --primary-dark: #0c6c3a;
+    --primary-tint: rgba(18, 138, 76, 0.10);
 
-    --shadow: 0 16px 40px -18px rgba(0, 0, 0, 0.12);
+    --accent-blue: #0a7ea8;
+    --accent-amber: #b3660a;
+    --danger: #d64545;
+    --danger-bg: rgba(214, 69, 69, 0.08);
+
+    --shadow: 0 16px 40px -18px rgba(16, 40, 26, 0.16);
+    --shadow-sm: 0 6px 16px -8px rgba(16, 40, 26, 0.14);
 }
 
 /* ===================================================================

@@ -14,6 +14,12 @@ from earth_engine_service import (
     ERA5_LAND_SCALE_M,
 )
 
+# How many extra years back fetch_spi will search, beyond the minimum
+# number of history years it needs, before giving up. A couple of
+# sporadic per-year CHIRPS gaps shouldn't be able to sink the whole SPI
+# computation when a few more years of history are just as valid.
+SPI_HISTORY_SEARCH_SLACK = 4
+
 logger = logging.getLogger(__name__)
 GDD_BASE_TEMP_C = 10.0
 CHIRPS_COLLECTION = "UCSB-CHG/CHIRPS/DAILY"
@@ -35,12 +41,20 @@ def _latest_completed_year() -> int:
 
 def fetch_solar_radiation(lat: float, lng: float, polygon: Optional[dict] = None, start: Optional[str] = None, end: Optional[str] = None) -> Dict[str, Any]:
     try:
-        filter_region=_weather_region(lat,lng,polygon,ERA5_LAND_SCALE_M); year=_latest_completed_year(); start,end=(start,end) if start and end else _completed_season_window(year)
-        coll=ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR").filterDate(start,end).filterBounds(filter_region).select("surface_solar_radiation_downwards_sum")
-        val=_reduce_mean_with_retry(coll.mean(),lat,lng,polygon,ERA5_LAND_SCALE_M)
-        if val is None:
-            return {"available":False,"reason":"ERA5-Land solar radiation reduction returned no value."}
-        return {"available":True,"avg_daily_solar_radiation_mj_m2":round(max(0.0,val)/1_000_000,2),"window":f"{start} to {end}","source":"ECMWF ERA5-Land Daily Aggregate"}
+        filter_region=_weather_region(lat,lng,polygon,ERA5_LAND_SCALE_M); year=_latest_completed_year()
+        # Try the latest completed season first; if that specific window
+        # comes back empty (a real data gap for those exact dates — buffer
+        # widening in _reduce_mean_with_retry already handles pixel-coverage
+        # issues), fall back one year earlier instead of "no data" outright.
+        windows = [(start, end)] if start and end else [_completed_season_window(year), _completed_season_window(year - 1)]
+        last_reason = "ERA5-Land solar radiation reduction returned no value."
+        for w_start, w_end in windows:
+            coll=ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR").filterDate(w_start,w_end).filterBounds(filter_region).select("surface_solar_radiation_downwards_sum")
+            val=_reduce_mean_with_retry(coll.mean(),lat,lng,polygon,ERA5_LAND_SCALE_M)
+            if val is not None:
+                return {"available":True,"avg_daily_solar_radiation_mj_m2":round(max(0.0,val)/1_000_000,2),"window":f"{w_start} to {w_end}","source":"ECMWF ERA5-Land Daily Aggregate"}
+            last_reason = f"ERA5-Land solar radiation reduction returned no value for {w_start} to {w_end}."
+        return {"available":False,"reason":last_reason}
     except Exception as exc:
         # Region/window setup used to sit OUTSIDE this try block, so an
         # exception there (e.g. a transient Earth Engine geometry/auth
@@ -58,27 +72,54 @@ def _season_rainfall_mm(lat: float, lng: float, polygon: Optional[dict], year: i
     try:
         return _reduce_mean_with_retry(coll.sum(),lat,lng,polygon,CHIRPS_SCALE_M)
     except Exception:
+        # Previously swallowed with zero trace — any real cause (auth,
+        # quota, transient network error) was invisible in the logs,
+        # which is exactly what made "why is SPI null" hard to debug.
+        logger.exception("CHIRPS season rainfall fetch failed for year %s", year)
         return None
 
 def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None, current_year: Optional[int] = None, history_years: int = 4) -> Dict[str, Any]:
     current_year=current_year or _latest_completed_year()
     if current_year>=datetime.utcnow().year: current_year=datetime.utcnow().year-1
-    start_year=current_year-history_years
+
+    # Current season: try the latest completed year, then fall back one
+    # year earlier if that exact window has a gap (mirrors the rainfall
+    # and solar-radiation fallback — a real gap in one specific window
+    # shouldn't be the reason the whole SPI comes back "no data").
     try:
-        annual=[(y,_season_rainfall_mm(lat,lng,polygon,y)) for y in range(start_year,current_year+1)]
+        used_year = current_year
+        current_val = _season_rainfall_mm(lat, lng, polygon, used_year)
+        if current_val is None:
+            used_year = current_year - 1
+            current_val = _season_rainfall_mm(lat, lng, polygon, used_year)
     except Exception as exc:
-        logger.exception("Year-by-year SPI fetch failed")
+        logger.exception("Current-season rainfall fetch for SPI failed")
+        return {"available":False,"reason":f"Current-season rainfall fetch failed: {type(exc).__name__}"}
+    if current_val is None:
+        return {"available":False,"reason":f"No completed CHIRPS v3 rainfall data for {current_year} or {current_year-1}."}
+
+    # History: search backward from the year before the one actually used
+    # above, collecting valid years until `history_years` are found, or
+    # the search-back cap is hit. This tolerates 1-2 sporadic per-year
+    # gaps instead of requiring an exact contiguous block.
+    history = []
+    search_back = history_years + SPI_HISTORY_SEARCH_SLACK
+    try:
+        for y in range(used_year - 1, used_year - 1 - search_back, -1):
+            v = _season_rainfall_mm(lat, lng, polygon, y)
+            if v is not None:
+                history.append(v)
+            if len(history) >= history_years:
+                break
+    except Exception as exc:
+        logger.exception("Year-by-year SPI history fetch failed")
         return {"available":False,"reason":f"Rainfall history fetch failed: {type(exc).__name__}"}
-    valid=[(y,v) for y,v in annual if v is not None]
-    current_pair=next(((y,v) for y,v in valid if y==current_year),None)
-    if current_pair is None:return {"available":False,"reason":f"No completed CHIRPS v3 rainfall data for {current_year}."}
-    history=[v for y,v in valid if y<current_year]
-    if len(history)<4:return {"available":False,"reason":"Insufficient completed rainfall history for SPI."}
-    current=current_pair[1]; mean=sum(history)/len(history); stddev=math.sqrt(sum((x-mean)**2 for x in history)/len(history))
+    if len(history)<4:return {"available":False,"reason":f"Insufficient completed rainfall history for SPI (found {len(history)} usable year(s) out of the last {search_back} searched)."}
+    current=current_val; mean=sum(history)/len(history); stddev=math.sqrt(sum((x-mean)**2 for x in history)/len(history))
     if stddev==0:return {"available":False,"reason":"Zero variance in rainfall history — cannot compute SPI."}
     spi=round((current-mean)/stddev,2)
     category="Extreme drought" if spi<=-2 else "Severe drought" if spi<=-1.5 else "Moderate drought" if spi<=-1 else "Near normal" if spi<1 else "Moderately wet" if spi<1.5 else "Very wet"
-    return {"available":True,"spi":spi,"category":category,"current_season_rainfall_mm":round(current,1),"historical_mean_mm":round(mean,1),"historical_stddev_mm":round(stddev,1),"years_used":len(history),"season_year":current_year,"source":"CHIRPS v3 (Jun-Oct completed-season window)"}
+    return {"available":True,"spi":spi,"category":category,"current_season_rainfall_mm":round(current,1),"historical_mean_mm":round(mean,1),"historical_stddev_mm":round(stddev,1),"years_used":len(history),"season_year":used_year,"source":"CHIRPS v3 (Jun-Oct completed-season window)"}
 
 def fetch_gdd(lat: float, lng: float, polygon: Optional[dict] = None, start: Optional[str] = None, end: Optional[str] = None, base_temp_c: float = GDD_BASE_TEMP_C) -> Dict[str, Any]:
     try:
@@ -96,13 +137,21 @@ def fetch_spei_proxy(lat: float, lng: float, polygon: Optional[dict] = None, cur
     if current_year>=datetime.utcnow().year:current_year=datetime.utcnow().year-1
     chirps_region=_weather_region(lat,lng,polygon,CHIRPS_SCALE_M)
     modis_region=_weather_region(lat,lng,polygon,MODIS_LST_SCALE_M)
+    last_reason = f"Insufficient completed-season data for SPEI proxy ({current_year})."
     try:
-        rain=_reduce_mean_with_retry(ee.ImageCollection(CHIRPS_COLLECTION).filterDate(f"{current_year}-06-01",f"{current_year}-11-01").filterBounds(chirps_region).select("precipitation").sum(),lat,lng,polygon,CHIRPS_SCALE_M)
-        temp=_reduce_mean_with_retry(ee.ImageCollection("MODIS/061/MOD11A1").filterDate(f"{current_year}-06-01",f"{current_year}-11-01").filterBounds(modis_region).select("LST_Day_1km").mean().multiply(0.02).subtract(273.15),lat,lng,polygon,MODIS_LST_SCALE_M)
-        if rain is None or temp is None or temp<=0:return {"available":False,"reason":f"Insufficient completed-season data for SPEI proxy ({current_year})."}
-        heat=(temp/5)**1.514; a=6.75e-7*heat**3-7.71e-5*heat**2+1.792e-2*heat+0.49239; pet=16*((10*temp/heat)**a)*5 if heat>0 else 0
-        proxy=round(max(-3,min(3,(rain-pet)/300)),2); category="Dry stress (proxy)" if proxy<=-1.5 else "Excess moisture (proxy)" if proxy>=1.5 else "Near normal (proxy)"
-        return {"available":True,"spei_proxy":proxy,"category":category,"rainfall_mm":round(rain,1),"estimated_pet_mm":round(pet,1),"season_year":current_year,"method":"Thornthwaite PET temperature-only proxy; NOT the full standard SPEI.","source":"CHIRPS v3 + MODIS LST"}
+        # Try the latest completed season first, then fall back one year
+        # earlier if THAT specific window has a gap in either CHIRPS or
+        # MODIS — same fallback pattern as rainfall/solar/SPI above.
+        for y in (current_year, current_year - 1):
+            rain=_reduce_mean_with_retry(ee.ImageCollection(CHIRPS_COLLECTION).filterDate(f"{y}-06-01",f"{y}-11-01").filterBounds(chirps_region).select("precipitation").sum(),lat,lng,polygon,CHIRPS_SCALE_M)
+            temp=_reduce_mean_with_retry(ee.ImageCollection("MODIS/061/MOD11A1").filterDate(f"{y}-06-01",f"{y}-11-01").filterBounds(modis_region).select("LST_Day_1km").mean().multiply(0.02).subtract(273.15),lat,lng,polygon,MODIS_LST_SCALE_M)
+            if rain is None or temp is None or temp<=0:
+                last_reason = f"Insufficient completed-season data for SPEI proxy ({y})."
+                continue
+            heat=(temp/5)**1.514; a=6.75e-7*heat**3-7.71e-5*heat**2+1.792e-2*heat+0.49239; pet=16*((10*temp/heat)**a)*5 if heat>0 else 0
+            proxy=round(max(-3,min(3,(rain-pet)/300)),2); category="Dry stress (proxy)" if proxy<=-1.5 else "Excess moisture (proxy)" if proxy>=1.5 else "Near normal (proxy)"
+            return {"available":True,"spei_proxy":proxy,"category":category,"rainfall_mm":round(rain,1),"estimated_pet_mm":round(pet,1),"season_year":y,"method":"Thornthwaite PET temperature-only proxy; NOT the full standard SPEI.","source":"CHIRPS v3 + MODIS LST"}
+        return {"available":False,"reason":last_reason}
     except Exception as exc:
         logger.exception("SPEI proxy fetch failed")
         return {"available":False,"reason":f"SPEI proxy computation failed: {type(exc).__name__}"}

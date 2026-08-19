@@ -20,11 +20,12 @@ const BHUMI_API_BASE_URL = window.FARMSCORE_API_URL;
     link.dataset.bhumiUiPolish = "true";
     document.head.appendChild(link);
 
-    // Only the main dashboard gets the approved light reference layout.
+    // The main dashboard is intentionally light and professional,
+    // independent of the user's saved global day/night preference —
+    // style.css's [data-theme="light"] block plus its dashboard-specific
+    // component rules handle the whole look now (see style.css).
     const isDashboard = window.location.pathname.endsWith("index.html") || window.location.pathname === "/" || window.location.pathname.endsWith("/Frontend/");
     if (isDashboard) {
-        // The dashboard is intentionally light and professional, independent
-        // of the user's saved global day/night preference.
         document.documentElement.setAttribute("data-theme", "light");
 
         if (!document.querySelector('script[data-bhumi-dashboard-theme]')) {
@@ -32,25 +33,6 @@ const BHUMI_API_BASE_URL = window.FARMSCORE_API_URL;
             dashboardTheme.src = "dashboard-theme-force.js?v=1";
             dashboardTheme.dataset.bhumiDashboardTheme = "true";
             document.head.appendChild(dashboardTheme);
-        }
-
-        if (!document.querySelector('link[data-bhumi-dashboard-light]')) {
-            const dashboardCss = document.createElement("link");
-            dashboardCss.rel = "stylesheet";
-            dashboardCss.href = "dashboard-light.css?v=3";
-            dashboardCss.dataset.bhumiDashboardLight = "true";
-            document.head.appendChild(dashboardCss);
-        }
-
-        // Keep the 20-parameter indicator grid readable after the light
-        // reference layout is applied. This is loaded LAST intentionally
-        // so its sizing/wrapping rules win over the reference dashboard CSS.
-        if (!document.querySelector('link[data-bhumi-indicator-fix]')) {
-            const indicatorFixCss = document.createElement("link");
-            indicatorFixCss.rel = "stylesheet";
-            indicatorFixCss.href = "dashboard-indicator-fix.css?v=2";
-            indicatorFixCss.dataset.bhumiIndicatorFix = "true";
-            document.head.appendChild(indicatorFixCss);
         }
     }
 })();

@@ -1557,7 +1557,13 @@ def comprehensive_score_route():
         "vh_vv": sar.get("vh_vv_ratio") if sar.get("available") else None,
         "rvi": sar.get("rvi") if sar.get("available") else None,
         "rainfall": satellite.get("rainfall"),
-        "air_temp": satellite.get("temperature"),
+        # FIX: this was reading satellite.get("temperature") -- the MODIS LST
+        # value, same field used for "lst" below -- instead of the separate
+        # ERA5-Land air_temperature field fetch_farm_data() actually computes.
+        # That made air_temp == lst every time, which the safety check in
+        # comprehensive_score_service.py correctly detected and nulled out,
+        # showing as "Air Temperature -- no data" in the UI.
+        "air_temp": satellite.get("air_temperature"),
         "solar_radiation": solar.get("avg_daily_solar_radiation_mj_m2") if solar.get("available") else None,
         "spi": spi.get("spi") if spi.get("available") else None,
         "spei": spei.get("spei_proxy") if spei.get("available") else None,

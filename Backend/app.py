@@ -223,6 +223,29 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
     }
 
     result = calculate_score(comprehensive_raw_values)
+
+    # ---- Surface WHY a parameter came back unavailable (debug aid). Each
+    # weather-index fetch already computes a human-readable reason when it
+    # fails; previously that reason was only logged server-side and the
+    # frontend just saw "no data" with no explanation. Attach it to the
+    # matching component so the frontend can show it (e.g. as a tooltip). ----
+    data_reasons = {}
+    if satellite_data.get("rainfall") is None and satellite_data.get("rainfall_reason"):
+        data_reasons["rainfall"] = satellite_data["rainfall_reason"]
+    if not solar.get("available") and solar.get("reason"):
+        data_reasons["solar_radiation"] = solar["reason"]
+    if not spi.get("available") and spi.get("reason"):
+        data_reasons["spi"] = spi["reason"]
+    if not spei.get("available") and spei.get("reason"):
+        data_reasons["spei"] = spei["reason"]
+    if not gdd.get("available") and gdd.get("reason"):
+        data_reasons["gdd"] = gdd["reason"]
+    for key, reason in data_reasons.items():
+        if key in result.get("components", {}):
+            result["components"][key]["unavailable_reason"] = reason
+    if data_reasons:
+        logger.warning("compute_farmscore data_reasons lat=%.5f lng=%.5f: %s", lat, lng, data_reasons)
+
     crop_result = recommend_crop(
         satellite_data.get("ndvi"),
         satellite_data.get("ndmi"),
@@ -357,6 +380,7 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
         "groundwater_trend": satellite_data.get("groundwater_trend"),
         "climate_risk": climate_risk,
         "coordinates": {"lat": lat, "lng": lng},
+        "data_reasons": data_reasons,
         "enrichment": enrichment,
         "yield_prediction": yield_prediction,
         "elapsed_seconds": elapsed,

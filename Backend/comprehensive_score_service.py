@@ -83,7 +83,8 @@ def _norm_lst(v): return None if v is None else _range_score(v, 5.0, 18.0, 32.0,
 _NORMALIZERS = {"ndvi":_norm_ndvi,"evi":_norm_evi,"savi":_norm_savi,"msavi":_norm_msavi,"ndre":_norm_ndre,"ndmi":_norm_ndmi,"ndwi":_norm_ndwi,"ci_green":_norm_ci_green,"ci_rededge":_norm_ci_rededge,"vv":_norm_vv,"vh":_norm_vh,"vh_vv":_norm_vh_vv,"rvi":_norm_rvi,"rainfall":_norm_rainfall,"air_temp":_norm_air_temp,"solar_radiation":_norm_solar,"spi":_norm_spi,"spei":_norm_spei,"gdd":_norm_gdd,"lst":_norm_lst}
 
 def compute_comprehensive_score(raw_values: Dict[str, Optional[float]], weights: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
-    weights = weights or DEFAULT_WEIGHTS
+    # Make a copy so DEFAULT_WEIGHTS is never modified globally.
+    weights = dict(weights or DEFAULT_WEIGHTS)
     raw_values = dict(raw_values)
 
     # The API historically passed the same MODIS LST value into both
@@ -95,7 +96,12 @@ def compute_comprehensive_score(raw_values: Dict[str, Optional[float]], weights:
     if air_temp is not None and lst is not None:
         try:
             if abs(float(air_temp) - float(lst)) < 0.01:
+                # Remove the duplicate air-temperature signal.
                 raw_values["air_temp"] = None
+
+                # Also remove its weight so it cannot contribute to
+                # available_weight_sum or the final score.
+                weights["air_temp"] = 0.0
         except (TypeError, ValueError):
             pass
 

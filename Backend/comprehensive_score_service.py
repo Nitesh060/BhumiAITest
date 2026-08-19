@@ -137,5 +137,5 @@ def compute_comprehensive_score(raw_values: Dict[str, Optional[float]], weights:
         "confidence": confidence, "components": components, "parameters_used": used,
         "parameters_total": len(_NORMALIZERS), "parameter_groups": PARAMETER_GROUPS,
         "validation_status": "provisional — correlated parameter groups are explicitly tracked; empirical correlation/PCA calibration against ground-truth farms is still required",
-        "method": "Weighted average of transparent 0-100 suitability sub-scores. Missing parameters are redistributed proportionally. LST and genuine 2m air temperature are separate signals; legacy duplicate temperature inputs are de-duplicated automatically. Thresholds are provisional and require ground-truth calibration before credit decisions.",
+        "method": "Weighted average of transparent 0-100 suitability sub-scores. Missing parameters are redistributed proportionally. LST and genuine 2m air temperature are separate signals; legacy MODIS LST duplicates in both fields are deduplicated.",
     }

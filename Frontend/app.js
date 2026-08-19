@@ -700,10 +700,10 @@ const PARAM_ICONS = {
 };
 
 const PARAM_COLORS = [
-    "#34d399", "#22c55e", "#84cc16", "#a3e635", "#65a30d", "#4ade80", "#38bdf8",
+    "#34d399", "#22c55e", "#84cc16", "#65a30d", "#4d7c0f", "#4ade80", "#38bdf8",
     "#16a34a", "#15803d",
-    "#a78bfa", "#8b5cf6", "#7c3aed", "#6d28d9",
-    "#60a5fa", "#f59e0b", "#fbbf24", "#0ea5e9", "#06b6d4", "#84cc16", "#f97316",
+    "#8b5cf6", "#7c3aed", "#6d28d9", "#5b21b6",
+    "#2563eb", "#f59e0b", "#b45309", "#0ea5e9", "#0e7490", "#65a30d", "#f97316",
 ];
 
 function statusLabel(pct) {

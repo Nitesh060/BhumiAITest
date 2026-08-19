@@ -10,7 +10,7 @@ from earth_engine_service import _get_region, _reduce_mean
 
 logger = logging.getLogger(__name__)
 GDD_BASE_TEMP_C = 10.0
-CHIRPS_COLLECTION = "UCSB-CHC/CHIRPS/V3/DAILY_SAT"
+CHIRPS_COLLECTION = "UCSB-CHG/CHIRPS/DAILY"
 
 def _weather_region(lat: float, lng: float, polygon: Optional[dict]) -> ee.Geometry:
     return _get_region(lat, lng, polygon).buffer(5000)

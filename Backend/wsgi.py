@@ -16,7 +16,17 @@ register_alphaearth_routes(app)
 # Existing 20-parameter FarmScore formula stays unchanged. Only the data
 # windows are adapted to the latest available Kharif + Rabi seasons.
 # No Base/Kharif/Rabi 200/400/400 split is introduced.
-_season_cache = {}
+#
+# Bounded in an OrderedDict so this cache can never grow without limit —
+# on Render's free 512MB instance, an unbounded dict here (one entry per
+# unique lat/lng/polygon ever queried) was a slow memory leak that added
+# to the OOM risk during /calculate. Oldest entry is evicted once the
+# cap is hit (simple LRU-ish behaviour, insertion order is good enough
+# for our access pattern).
+from collections import OrderedDict
+
+_season_cache: "OrderedDict" = OrderedDict()
+_SEASON_CACHE_MAX = 50
 _original_fetch_farm_data = app_module.fetch_farm_data
 
 
@@ -28,6 +38,10 @@ def _get_seasonal(lat, lng, polygon=None):
     key = _season_key(lat, lng, polygon)
     if key not in _season_cache:
         _season_cache[key] = fetch_seasonal_comprehensive_data(lat, lng, polygon)
+        if len(_season_cache) > _SEASON_CACHE_MAX:
+            _season_cache.popitem(last=False)  # evict oldest entry
+    else:
+        _season_cache.move_to_end(key)  # keep recently-used entries alive longest
     return _season_cache[key]
 
 

@@ -138,12 +138,76 @@ def _filter_growing_season(collection: ee.ImageCollection) -> ee.ImageCollection
     return _filter_season(collection)
 
 
-def _reduce_mean(image: ee.Image, region: ee.Geometry, scale: int) -> Optional[float]:
-    result = image.reduceRegion(reducer=ee.Reducer.mean(), geometry=region, scale=scale, maxPixels=1e9).getInfo() or {}
+def _reduce_mean(image: ee.Image, region: ee.Geometry, scale: int, best_effort: bool = True, tile_scale: int = 4) -> Optional[float]:
+    result = image.reduceRegion(
+        reducer=ee.Reducer.mean(),
+        geometry=region,
+        scale=scale,
+        maxPixels=1e9,
+        bestEffort=best_effort,
+        tileScale=tile_scale,
+    ).getInfo() or {}
     for value in result.values():
         if value is not None:
             return float(value)
     return None
+
+
+def _min_scale_buffer_m(scale_m: float) -> float:
+    """Minimum region radius (metres) needed so ``ee.Reducer.mean()`` (a
+    *weighted* reducer) reliably finds at least one pixel to average for a
+    coarse-resolution raster of this native scale.
+
+    Earth Engine's own docs (Statistics of an Image Region /
+    "Pixels in the region") say weighted reducers only count a pixel if
+    *at least ~1/256 (~0.4%) of its area* is covered by the reduceRegion()
+    geometry; anything smaller is rounded down to weight 0 and the whole
+    reduction silently returns null. A circle whose radius equals the
+    dataset's own pixel scale has an area many times larger than that 0.4%
+    floor for any of the coarse products this app uses (CHIRPS ~5.5km,
+    ERA5-Land ~11km, MODIS LST ~1km, GLDAS ~27.8km), so it clears the floor
+    regardless of how the farm's point/polygon happens to sit on the
+    dataset's pixel grid.
+    """
+    return max(float(scale_m), 250.0)
+
+
+def _scaled_region(lat: float, lng: float, polygon: Optional[dict], scale_m: float, extra_buffer_m: float = 0.0) -> ee.Geometry:
+    """Region for reduceRegion() calls against a coarse-resolution raster
+    (CHIRPS, ERA5-Land, MODIS LST, GLDAS, ...). Always buffered out to at
+    least the dataset's own pixel scale — regardless of whether the caller
+    passed a bare point (tiny 30 m fallback buffer) or a small farm polygon
+    — so the reduction has real pixel coverage to average instead of
+    silently returning ``None`` for every request.
+    """
+    base_region, _ = _region_geometry(lat, lng, polygon)
+    return base_region.buffer(_min_scale_buffer_m(scale_m) + max(0.0, extra_buffer_m))
+
+
+def _reduce_mean_with_retry(
+    image: ee.Image,
+    lat: float,
+    lng: float,
+    polygon: Optional[dict],
+    scale: float,
+    max_retries: int = 2,
+) -> Optional[float]:
+    """Like ``_reduce_mean`` but builds a scale-aware region (see
+    ``_scaled_region``) and, if that first attempt still comes back empty
+    (e.g. a real, temporary data gap — persistent cloud/QA masking on
+    MODIS LST, a coastal point sitting mostly over ERA5-Land's ocean mask,
+    etc.), retries with a progressively wider buffer instead of giving up
+    immediately. This trades a little extra spatial averaging for far
+    fewer "No data" results.
+    """
+    region = _scaled_region(lat, lng, polygon, scale)
+    value = _reduce_mean(image, region, scale)
+    attempt = 0
+    while value is None and attempt < max_retries:
+        attempt += 1
+        region = _scaled_region(lat, lng, polygon, scale, extra_buffer_m=scale * attempt)
+        value = _reduce_mean(image, region, scale)
+    return value
 
 
 def _sentinel2_cloud_masked(lat: float, lng: float, polygon: Optional[dict]) -> ee.ImageCollection:
@@ -189,36 +253,46 @@ def _completed_climate_window(year: int) -> Tuple[str, str]:
     return f"{year}-06-01", f"{year}-11-01"
 
 
+CHIRPS_SCALE_M = 5566
+MODIS_LST_SCALE_M = 1000
+ERA5_LAND_SCALE_M = 11132
+GLDAS_SCALE_M = 27830
+
+
 def _fetch_rainfall(lat: float, lng: float, polygon: Optional[dict]) -> Optional[float]:
-    region, _ = _region_geometry(lat, lng, polygon)
+    # CHIRPS's native grid is ~5.5km/pixel. filterBounds() only needs the
+    # bare point/polygon to find overlapping tiles, but the reduceRegion()
+    # geometry must be buffered out to (at least) that pixel scale or
+    # ee.Reducer.mean() silently returns null — see _scaled_region().
+    filter_region, _ = _region_geometry(lat, lng, polygon)
     year = _latest_completed_climate_year()
     start, end = _completed_climate_window(year)
     try:
         c = (ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
              .filterDate(start, end)
-             .filterBounds(region)
+             .filterBounds(filter_region)
              .select("precipitation"))
         if c.size().getInfo() == 0:
             return None
         # CHIRPS precipitation is mm/day. Mean over the completed
         # Jun-Oct season therefore remains a mean daily rainfall value.
-        return _reduce_mean(c.mean(), region, 5566)
+        return _reduce_mean_with_retry(c.mean(), lat, lng, polygon, CHIRPS_SCALE_M)
     except Exception:
         logger.exception("Rainfall fetch failed")
         return None
 
 
 def _fetch_rainfall_monthly(lat: float, lng: float, polygon: Optional[dict]) -> list:
-    region, _ = _region_geometry(lat, lng, polygon)
+    filter_region, _ = _region_geometry(lat, lng, polygon)
     year = _latest_completed_climate_year()
     out = []
     for month, label in zip((6, 7, 8, 9, 10), ("Jun", "Jul", "Aug", "Sep", "Oct")):
         try:
             c = (ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
                  .filterDate(f"{year}-{month:02d}-01", f"{year}-{month + 1:02d}-01" if month < 10 else f"{year + 1}-01-01")
-                 .filterBounds(region)
+                 .filterBounds(filter_region)
                  .select("precipitation"))
-            value = _reduce_mean(c.mean(), region, 5566) if c.size().getInfo() else None
+            value = _reduce_mean_with_retry(c.mean(), lat, lng, polygon, CHIRPS_SCALE_M) if c.size().getInfo() else None
         except Exception:
             logger.exception("Rainfall monthly fetch failed for %s", label)
             value = None
@@ -227,26 +301,26 @@ def _fetch_rainfall_monthly(lat: float, lng: float, polygon: Optional[dict]) -> 
 
 
 def _fetch_lst(lat: float, lng: float, polygon: Optional[dict]) -> Optional[float]:
-    region, _ = _region_geometry(lat, lng, polygon)
+    filter_region, _ = _region_geometry(lat, lng, polygon)
     start, end = _date_window()
-    c = _filter_season(ee.ImageCollection("MODIS/061/MOD11A1").filterDate(start, end).filterBounds(region).select("LST_Day_1km"))
+    c = _filter_season(ee.ImageCollection("MODIS/061/MOD11A1").filterDate(start, end).filterBounds(filter_region).select("LST_Day_1km"))
     lst_c = c.map(lambda img: img.multiply(0.02).subtract(273.15).rename("LST_C")).mean()
-    return _reduce_mean(lst_c, region, 1000)
+    return _reduce_mean_with_retry(lst_c, lat, lng, polygon, MODIS_LST_SCALE_M)
 
 
 def _fetch_air_temperature(lat: float, lng: float, polygon: Optional[dict]) -> Optional[float]:
-    region, _ = _region_geometry(lat, lng, polygon)
+    filter_region, _ = _region_geometry(lat, lng, polygon)
     start, end = _date_window()
-    c = _filter_season(ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR").filterDate(start, end).filterBounds(region).select("temperature_2m"))
+    c = _filter_season(ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR").filterDate(start, end).filterBounds(filter_region).select("temperature_2m"))
     air_c = c.map(lambda img: img.subtract(273.15).rename("AIR_TEMP_C")).mean()
-    return _reduce_mean(air_c, region, 11132)
+    return _reduce_mean_with_retry(air_c, lat, lng, polygon, ERA5_LAND_SCALE_M)
 
 
 def _fetch_deep_soil_moisture(lat: float, lng: float, polygon: Optional[dict]) -> Optional[float]:
-    region, _ = _region_geometry(lat, lng, polygon)
+    filter_region, _ = _region_geometry(lat, lng, polygon)
     start, end = _date_window()
-    c = _filter_season(ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H").filterDate(start, end).filterBounds(region).select("SoilMoi100_200cm_inst"))
-    return _reduce_mean(c.mean(), region, 27830)
+    c = _filter_season(ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H").filterDate(start, end).filterBounds(filter_region).select("SoilMoi100_200cm_inst"))
+    return _reduce_mean_with_retry(c.mean(), lat, lng, polygon, GLDAS_SCALE_M)
 
 
 def _fetch_s2_meta(lat: float, lng: float, polygon: Optional[dict]) -> Dict[str, Any]:
@@ -270,11 +344,11 @@ def _fetch_ndvi_trend(lat: float, lng: float, polygon: Optional[dict]) -> list:
 
 
 def _fetch_deep_soil_trend(lat: float, lng: float, polygon: Optional[dict]) -> list:
-    region, _ = _region_geometry(lat, lng, polygon)
+    filter_region, _ = _region_geometry(lat, lng, polygon)
     out = []
     for year in _trend_years():
-        c = ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H").filterDate(f"{year}-08-01", f"{year}-11-01").filterBounds(region).select("SoilMoi100_200cm_inst")
-        value = _reduce_mean(c.mean(), region, 27830)
+        c = ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H").filterDate(f"{year}-08-01", f"{year}-11-01").filterBounds(filter_region).select("SoilMoi100_200cm_inst")
+        value = _reduce_mean_with_retry(c.mean(), lat, lng, polygon, GLDAS_SCALE_M)
         out.append({"year": year, "deep_soil_moisture": round(value, 2) if value is not None else None})
     return out
 

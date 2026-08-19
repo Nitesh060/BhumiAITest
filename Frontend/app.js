@@ -754,7 +754,12 @@ function renderResult(data) {
         const pct = Math.max(0, Math.min(100, c.sub_score));
         const rawDisplay = typeof c.raw_value === "number" ? c.raw_value.toFixed(2) : c.raw_value;
         const unit = c.unit ? ` ${c.unit}` : "";
-        const availability = c.data_available ? "" : `<span class="p-nodata">⚠ no data</span>`;
+        // The backend already computes a specific reason for every
+        // unavailable component (data_reasons / unavailable_reason in
+        // app.py) — previously it was fetched but never rendered, so
+        // "no data" gave no clue why. Surface it as a hover tooltip.
+        const nodataReason = c.unavailable_reason ? ` title="${String(c.unavailable_reason).replace(/"/g, "&quot;")}"` : "";
+        const availability = c.data_available ? "" : `<span class="p-nodata"${nodataReason}>⚠ no data</span>`;
 
         let extraTitle = PARAM_MEANINGS[key] || "";
         if (key === "rainfall" && data.rainfall_monthly && data.rainfall_monthly.length) {

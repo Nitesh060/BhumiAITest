@@ -34,16 +34,22 @@ def _latest_completed_year() -> int:
     return datetime.utcnow().year - 1
 
 def fetch_solar_radiation(lat: float, lng: float, polygon: Optional[dict] = None, start: Optional[str] = None, end: Optional[str] = None) -> Dict[str, Any]:
-    filter_region=_weather_region(lat,lng,polygon,ERA5_LAND_SCALE_M); year=_latest_completed_year(); start,end=(start,end) if start and end else _completed_season_window(year)
     try:
+        filter_region=_weather_region(lat,lng,polygon,ERA5_LAND_SCALE_M); year=_latest_completed_year(); start,end=(start,end) if start and end else _completed_season_window(year)
         coll=ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR").filterDate(start,end).filterBounds(filter_region).select("surface_solar_radiation_downwards_sum")
         val=_reduce_mean_with_retry(coll.mean(),lat,lng,polygon,ERA5_LAND_SCALE_M)
         if val is None:
             return {"available":False,"reason":"ERA5-Land solar radiation reduction returned no value."}
         return {"available":True,"avg_daily_solar_radiation_mj_m2":round(max(0.0,val)/1_000_000,2),"window":f"{start} to {end}","source":"ECMWF ERA5-Land Daily Aggregate"}
     except Exception as exc:
+        # Region/window setup used to sit OUTSIDE this try block, so an
+        # exception there (e.g. a transient Earth Engine geometry/auth
+        # error) would escape this function entirely uncaught, losing the
+        # "reason" text — the caller (_safe_score_fetch in app.py) only saw
+        # a bare exception with no way to attach it to this component.
+        # Everything now runs inside the try so a reason is always returned.
         logger.exception("Solar radiation fetch failed")
-        return {"available":False,"reason":f"Solar radiation fetch failed: {type(exc).__name__}"}
+        return {"available":False,"reason":f"Solar radiation fetch failed: {type(exc).__name__}: {exc}"}
 
 def _season_rainfall_mm(lat: float, lng: float, polygon: Optional[dict], year: int) -> Optional[float]:
     start,end=_completed_season_window(year)
@@ -75,8 +81,8 @@ def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None, current_ye
     return {"available":True,"spi":spi,"category":category,"current_season_rainfall_mm":round(current,1),"historical_mean_mm":round(mean,1),"historical_stddev_mm":round(stddev,1),"years_used":len(history),"season_year":current_year,"source":"CHIRPS v3 (Jun-Oct completed-season window)"}
 
 def fetch_gdd(lat: float, lng: float, polygon: Optional[dict] = None, start: Optional[str] = None, end: Optional[str] = None, base_temp_c: float = GDD_BASE_TEMP_C) -> Dict[str, Any]:
-    filter_region=_weather_region(lat,lng,polygon,MODIS_LST_SCALE_M); year=_latest_completed_year(); start,end=(start,end) if start and end else _completed_season_window(year)
     try:
+        filter_region=_weather_region(lat,lng,polygon,MODIS_LST_SCALE_M); year=_latest_completed_year(); start,end=(start,end) if start and end else _completed_season_window(year)
         coll=ee.ImageCollection("MODIS/061/MOD11A1").filterDate(start,end).filterBounds(filter_region).select("LST_Day_1km").map(lambda img:img.multiply(0.02).subtract(273.15).subtract(base_temp_c).max(0).rename("GDD_daily"))
         val=_reduce_mean_with_retry(coll.sum(),lat,lng,polygon,MODIS_LST_SCALE_M)
         if val is None:return {"available":False,"reason":"GDD reduction returned no value."}

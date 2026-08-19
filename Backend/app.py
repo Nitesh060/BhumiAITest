@@ -1,1659 +1,1421 @@
-"""
-app.py
-======
-Flask REST API for the FarmScore agricultural-suitability platform.
-"""
+/**
+ * app.js
+ * ======
+ * FarmScore frontend application logic.
+ *
+ * - Initialises the Leaflet map.
+ * - Reads lat/lng from inputs or map click.
+ * - Calls the backend via calculateFarmScore().
+ * - Renders score ring, grade badge, parameter cards, historical trend,
+ *   satellite metadata, nearby resources (real OSM data via Overpass),
+ *   and weather (real data via Open-Meteo).
+ *
+ * No mock data. No AI-generated text. Every number shown either comes
+ * from the FarmScore backend (Earth Engine) or a free public API
+ * (Nominatim / Overpass / Open-Meteo), computed live.
+ */
 
-from __future__ import annotations
+/* ===================================================================
+   API Client
+   =================================================================== */
 
-import logging
-import os
-import sys
-import time
-from typing import Optional
+const API_BASE_URL =
+    window.FARMSCORE_API_URL ||
+    "https://bhumiaitest.onrender.com";
 
-from dotenv import load_dotenv
-from flask import Flask, jsonify, request, Response
-from flask_cors import CORS
+async function calculateFarmScore(lat, lng) {
+    const url = `${API_BASE_URL}/calculate`;
 
-from earth_engine_service import fetch_farm_data, initialise_earth_engine
-from scoring import calculate_score
-from crop_recommendation import recommend_crop
-from gemini_service import generate_insight, generate_chat_reply, diagnose_crop_image, generate_spectral_insight, generate_farm_advisor, generate_risk_analysis
-from spectral_service import calculate_spectral_intelligence
-from enrichment_service import (
-    fetch_soil_type,
-    fetch_adjacent_land_cover,
-    fetch_cropping_intensity,
-    fetch_irrigation_signal,
-    fetch_temperature_annual_range,
-    fetch_prosperity_proxy,
-    fetch_nearest_water_body_signal,
-    estimate_agro_ecological_zone,
-    fetch_cropping_history,
-    fetch_drought_instances,
-    fetch_village_population,
-    fetch_topography,
-    fetch_ndvi_heatmap,
-)
-from govt_data_service import fetch_mandi_price, fetch_district_yield_comparison, fetch_major_crops_in_region
-from glossary import GLOSSARY_TERMS
-from pdf_report import generate_pdf_report
-import whatsapp_service
-from yield_prediction import estimate_yield, compute_polygon_area_ha
-import db as db_module
-import farm_management_service as fms
-import auth_service
-import governance_service
-from spectral_indices import fetch_extended_indices, fetch_sar_moisture
-from historical_timeline_service import fetch_ndvi_historical_timeline, fetch_before_after_comparison
-from enrichment_service import fetch_vegetation_heatmap
-from crop_intelligence_service import (
-    identify_crop_heuristic,
-    detect_growth_stage,
-    estimate_sowing_harvest,
-    detect_crop_rotation,
-    CROP_CALENDAR,
-)
-from enrichment_service import fetch_cropping_intensity as _fetch_cropping_intensity_for_ci
-from enrichment_service import fetch_cropping_history as _fetch_cropping_history_for_ci
-from weather_soil_terrain_service import (
-    fetch_historical_weather,
-    fetch_soil_health,
-    fetch_soil_moisture,
-    fetch_flood_risk,
-)
-from enrichment_service import fetch_topography as _fetch_topography_for_flood
-from spectral_indices import fetch_sar_moisture as _fetch_sar_for_flood
-from spectral_indices import fetch_extended_indices
-from weather_indices_service import fetch_solar_radiation, fetch_spi, fetch_gdd, fetch_spei_proxy
-from comprehensive_score_service import compute_comprehensive_score, DEFAULT_WEIGHTS
-from credit_intelligence_service import (
-    estimate_income,
-    compute_bcis_score,
-    recommend_loan_ceiling,
-    auto_freeze_check,
-)
-from insurance_intelligence_service import (
-    verify_acreage,
-    verify_crop,
-    estimate_loss,
-    detect_fraud_signals,
-    assess_claim,
-)
-from historical_timeline_service import fetch_before_after_comparison as _fetch_before_after_for_claim
-from crop_intelligence_service import identify_crop_heuristic as _identify_crop_for_claim
+    const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lat, lng, polygon: farmPolygon }),
+    });
 
-load_dotenv()
+    const data = await response.json();
 
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-PORT = int(os.getenv("PORT", 5000))
-HOST = os.getenv("HOST", "0.0.0.0")
-DEBUG = os.getenv("FLASK_DEBUG", "0") == "1"
-
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    stream=sys.stdout,
-)
-logger = logging.getLogger(__name__)
-
-app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
-
-try:
-    db_module.init_db()
-except Exception:
-    logger.exception("init_db() failed at startup — Farm Management endpoints will report 'not configured'")
-
-
-@app.before_request
-def _ensure_ee_init():
-    """Best-effort Earth Engine init before each request.
-
-    This used to `raise` here for EVERY request except /health, which meant
-    ANY Earth Engine problem (bad/missing credentials, quota, a slow cold
-    start) took down the entire API — including endpoints that never touch
-    satellite data at all: /report/pdf (lays out an already-computed JSON
-    payload), /glossary, /mandi-price, /major-crops, /auth/*, all farm
-    management CRUD, /insurance-claim, /credit-intelligence, /admin/*,
-    /portfolio/summary, /audit-log, consent and loan endpoints. That's why
-    "PDF report generate nahi ho pa raha" could happen even though PDF
-    generation itself never calls Earth Engine.
-
-    The actual satellite-backed endpoints (/calculate, /spectral,
-    /crop-intelligence, /historical-timeline, etc.) already call Earth
-    Engine functions inside their own try/except and return a clear
-    502/503 JSON error if that fails — same fail-soft pattern used
-    throughout this codebase (see the per-parameter _safe()/_safe_score_fetch()
-    wrappers in compute_farmscore). So we no longer need a hard app-wide
-    gate here: log the failure and let the request proceed; only routes
-    that genuinely need Earth Engine will be affected, and they already
-    report that clearly to their caller.
-    """
-    try:
-        initialise_earth_engine()
-    except Exception as exc:
-        logger.error("Earth Engine init failed (non-fatal for this request): %s", exc)
-
-
-@app.route("/health", methods=["GET"])
-def health_check():
-    return jsonify({"status": "ok", "service": "FarmScore API"}), 200
-
-
-def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) -> dict:
-    """Core FarmScore computation — satellite fetch, scoring, crop
-    recommendation, climate risk, enrichment modules, AI insight.
-    Used by both /calculate (web) and the WhatsApp webhook, so the two
-    channels always return identical numbers for the same coordinates.
-    Raises on hard failures (satellite fetch / scoring); callers decide
-    how to surface that (HTTP error vs a WhatsApp text reply).
-
-    FarmScore (final_score, 300-900) is now computed from the full
-    20-parameter comprehensive model (Vegetation + Radar + Weather +
-    Temperature) — see scoring.py / comprehensive_score_service.py.
-    Groundwater is fetched here only for crop_recommendation.py (which
-    still uses the original 5-input signature) — it does NOT feed the
-    score anymore, by explicit design choice.
-    """
-    t0 = time.time()
-    logger.info("compute_farmscore lat=%.5f lng=%.5f", lat, lng)
-
-    satellite_data = fetch_farm_data(lat=lat, lng=lng, polygon=polygon)
-
-    # ---- Gather the other 15 comprehensive-score parameters in
-    # parallel (NDVI/NDMI/rainfall/temperature already came from
-    # satellite_data above) — same pattern as /comprehensive-score. ----
-    from concurrent.futures import ThreadPoolExecutor as _TPE_SCORE
-
-    def _safe_score_fetch(name, fn, *args):
-        try:
-            return name, fn(*args)
-        except Exception:
-            logger.exception("compute_farmscore sub-fetch '%s' failed (non-fatal)", name)
-            return name, None
-
-    with _TPE_SCORE(max_workers=2) as score_pool:
-        score_futures = [
-            score_pool.submit(_safe_score_fetch, "extended_indices", fetch_extended_indices, lat, lng, polygon),
-            score_pool.submit(_safe_score_fetch, "spectral", calculate_spectral_intelligence, lat, lng, polygon),
-            score_pool.submit(_safe_score_fetch, "sar", _fetch_sar_for_flood, lat, lng, polygon),
-            score_pool.submit(_safe_score_fetch, "solar", fetch_solar_radiation, lat, lng, polygon),
-            score_pool.submit(_safe_score_fetch, "spi", fetch_spi, lat, lng, polygon),
-            score_pool.submit(_safe_score_fetch, "gdd", fetch_gdd, lat, lng, polygon),
-            score_pool.submit(_safe_score_fetch, "spei", fetch_spei_proxy, lat, lng, polygon),
-        ]
-        score_results = {name: val for name, val in (f.result() for f in score_futures)}
-
-    extended = score_results.get("extended_indices") or {}
-    spectral_for_score = score_results.get("spectral") or {}
-    sar = score_results.get("sar") or {}
-    solar = score_results.get("solar") or {}
-    spi = score_results.get("spi") or {}
-    gdd = score_results.get("gdd") or {}
-    spei = score_results.get("spei") or {}
-
-    ndre_val = None
-    if spectral_for_score.get("indices", {}).get("nitrogen"):
-        ndre_val = spectral_for_score["indices"]["nitrogen"].get("raw_value")
-
-    comprehensive_raw_values = {
-        "ndvi": satellite_data.get("ndvi"),
-        "evi": extended.get("evi"),
-        "savi": extended.get("savi"),
-        "msavi": extended.get("msavi"),
-        "ndre": ndre_val,
-        "ndmi": satellite_data.get("ndmi"),
-        "ndwi": extended.get("ndwi"),
-        "ci_green": extended.get("ci_green"),
-        "ci_rededge": extended.get("ci_rededge"),
-        "vv": sar.get("vv_db") if sar.get("available") else None,
-        "vh": sar.get("vh_db") if sar.get("available") else None,
-        "vh_vv": sar.get("vh_vv_ratio") if sar.get("available") else None,
-        "rvi": sar.get("rvi") if sar.get("available") else None,
-        "rainfall": satellite_data.get("rainfall"),
-        "air_temp": satellite_data.get("air_temperature"),
-        "solar_radiation": solar.get("avg_daily_solar_radiation_mj_m2") if solar.get("available") else None,
-        "spi": spi.get("spi") if spi.get("available") else None,
-        "spei": spei.get("spei_proxy") if spei.get("available") else None,
-        "gdd": gdd.get("gdd") if gdd.get("available") else None,
-        "lst": satellite_data.get("lst"),
+    if (!response.ok) {
+        const message = data.error || data.detail || `Server error ${response.status}`;
+        throw new Error(message);
     }
 
-    result = calculate_score(comprehensive_raw_values)
+    return data;
+}
 
-    # ---- Surface WHY a parameter came back unavailable (debug aid). Each
-    # weather-index fetch already computes a human-readable reason when it
-    # fails; previously that reason was only logged server-side and the
-    # frontend just saw "no data" with no explanation. Attach it to the
-    # matching component so the frontend can show it (e.g. as a tooltip). ----
-    data_reasons = {}
-    if satellite_data.get("rainfall") is None and satellite_data.get("rainfall_reason"):
-        data_reasons["rainfall"] = satellite_data["rainfall_reason"]
-    if not solar.get("available") and solar.get("reason"):
-        data_reasons["solar_radiation"] = solar["reason"]
-    if not spi.get("available") and spi.get("reason"):
-        data_reasons["spi"] = spi["reason"]
-    if not spei.get("available") and spei.get("reason"):
-        data_reasons["spei"] = spei["reason"]
-    if not gdd.get("available") and gdd.get("reason"):
-        data_reasons["gdd"] = gdd["reason"]
-    for key, reason in data_reasons.items():
-        if key in result.get("components", {}):
-            result["components"][key]["unavailable_reason"] = reason
-    if data_reasons:
-        logger.warning("compute_farmscore data_reasons lat=%.5f lng=%.5f: %s", lat, lng, data_reasons)
+/* ===================================================================
+   Map Initialisation
+   =================================================================== */
 
-    crop_result = recommend_crop(
-        satellite_data.get("ndvi"),
-        satellite_data.get("ndmi"),
-        satellite_data.get("rainfall"),
-        satellite_data.get("air_temperature"),
-        satellite_data.get("groundwater"),
-        evi=comprehensive_raw_values.get("evi"),
-        ndre=comprehensive_raw_values.get("ndre"),
-    )
+let marker = null;
 
-    elapsed = round(time.time() - t0, 2)
-    logger.info("Score=%d Grade=%s elapsed=%.2fs", result["final_score"], result["grade"], elapsed)
+const map = L.map("map", { zoomControl: false }).setView([20.5, 78.9], 5);
 
-    # ---- Climate risk assessment — rule-based on the REAL rainfall/temperature
-    # values just fetched, not a model prediction. Thresholds are simple and
-    # transparent so the "why" is always visible. ----
-    def _assess_climate_risk(rainfall_mm_day, temp_c, spi_val=None, gdd_val=None, spei_val=None):
-        flags = []
-        if rainfall_mm_day is not None:
-            if rainfall_mm_day < 2:
-                flags.append("Low rainfall for the growing season")
-            elif rainfall_mm_day > 15:
-                flags.append("Very high rainfall — waterlogging risk")
-        if temp_c is not None:
-            if temp_c > 35:
-                flags.append("High temperature — heat stress risk")
-            elif temp_c < 15:
-                flags.append("Low temperature for most kharif crops")
+const streetLayer = L.tileLayer(
+    "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    { attribution: "© OpenStreetMap contributors", maxZoom: 19 }
+);
 
-        # SPI (drought/excess-rain anomaly vs historical years) — a
-        # signal rainfall_mm_day alone can't give, since that's just
-        # the current growing-season average with no historical context.
-        if spi_val is not None:
-            if spi_val <= -1.5:
-                flags.append(f"SPI {spi_val} — severe drought vs historical years")
-            elif spi_val <= -1:
-                flags.append(f"SPI {spi_val} — moderate drought vs historical years")
-            elif spi_val >= 1.5:
-                flags.append(f"SPI {spi_val} — unusually wet vs historical years")
+const satelliteLayer = L.tileLayer(
+    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    { attribution: "Tiles © Esri", maxZoom: 19 }
+);
 
-        # SPEI (Thornthwaite water-balance proxy) — catches heat-driven
-        # moisture stress that rainfall alone misses (high temp can
-        # deplete effective moisture even with normal rainfall).
-        if spei_val is not None and spei_val <= -1.5:
-            flags.append(f"SPEI {spei_val} — water-balance deficit (evapotranspiration proxy)")
+const terrainLayer = L.tileLayer(
+    "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+    { attribution: "© OpenTopoMap contributors (CC-BY-SA)", maxZoom: 17 }
+);
 
-        # GDD — very low accumulated heat units can indicate a stalled
-        # growing season; very high can indicate accelerated/stressed
-        # crop cycling. Thresholds are indicative, not crop-calibrated.
-        if gdd_val is not None:
-            if gdd_val < 400:
-                flags.append(f"GDD {gdd_val} — low heat accumulation, growth may be behind schedule")
-            elif gdd_val > 2200:
-                flags.append(f"GDD {gdd_val} — very high heat accumulation, possible heat stress")
+satelliteLayer.addTo(map);
+L.control.zoom({ position: "topleft" }).addTo(map);
+const baseLayersControl = L.control.layers(
+    { "Road Map": streetLayer, "Satellite": satelliteLayer, "Terrain": terrainLayer },
+    {},
+    { position: "topright" }
+).addTo(map);
 
-        if not flags:
-            level = "Low"
-        elif len(flags) <= 2:
-            level = "Moderate"
-        else:
-            level = "High"
+// Leaflet measures its container on init; if the surrounding CSS layout
+// finishes sizing after that (fonts loading, flex/grid settling), the map
+// renders at the wrong zoom/pan. Nudge it once layout has settled, and
+// again on any resize.
+window.addEventListener("load", () => setTimeout(() => map.invalidateSize(), 200));
+window.addEventListener("resize", () => map.invalidateSize());
 
-        return {"level": level, "flags": flags}
+L.Control.geocoder({ defaultMarkGeocode: false })
+    .on("markgeocode", function (e) {
+        const center = e.geocode.center;
+        map.setView(center, 16);
+        selectLocation(center.lat, center.lng);
+    })
+    .addTo(map);
 
-    climate_risk = _assess_climate_risk(
-        satellite_data.get("rainfall"), satellite_data.get("air_temperature"),
-        spi_val=comprehensive_raw_values.get("spi"),
-        gdd_val=comprehensive_raw_values.get("gdd"),
-        spei_val=comprehensive_raw_values.get("spei"),
-    )
+/* ===================================================================
+   Polygon Layer
+   =================================================================== */
 
-    # ---- Enrichment modules (SatSource parity) — run concurrently, each
-    # fails soft so one bad dataset never breaks the whole response. ----
-    from concurrent.futures import ThreadPoolExecutor as _TPE
+let drawnItems = new L.FeatureGroup();
+map.addLayer(drawnItems);
 
-    enrichment: dict = {}
+let farmPolygon = null;
 
-    def _safe(name, fn, *args):
-        try:
-            return name, fn(*args)
-        except Exception:
-            logger.exception("Enrichment '%s' failed (non-fatal)", name)
-            return name, None
+const drawControl = new L.Control.Draw({
+    edit: { featureGroup: drawnItems },
+    draw: {
+        polygon: {
+            allowIntersection: false,
+            showArea: true,
+            shapeOptions: { color: "#34d399", weight: 3 },
+        },
+        rectangle: true,
+        polyline: false,
+        circle: false,
+        circlemarker: false,
+        marker: false,
+    },
+});
 
-    with _TPE(max_workers=2) as pool:
-        futures = [
-            pool.submit(_safe, "soil_type", fetch_soil_type, lat, lng, polygon),
-            pool.submit(_safe, "adjacent_land_cover", fetch_adjacent_land_cover, lat, lng, polygon),
-            pool.submit(_safe, "cropping_intensity", fetch_cropping_intensity, lat, lng, polygon),
-            pool.submit(_safe, "irrigation", fetch_irrigation_signal, lat, lng, polygon),
-            pool.submit(_safe, "temperature_annual_range", fetch_temperature_annual_range, lat, lng, polygon),
-            pool.submit(_safe, "regional_prosperity", fetch_prosperity_proxy, lat, lng, polygon),
-            pool.submit(_safe, "nearest_water_body", fetch_nearest_water_body_signal, lat, lng, polygon),
-            pool.submit(_safe, "cropping_history", fetch_cropping_history, lat, lng, polygon),
-            pool.submit(_safe, "topography", fetch_topography, lat, lng, polygon),
-            pool.submit(_safe, "village_population", fetch_village_population, lat, lng),
-            pool.submit(_safe, "drought_instances", fetch_drought_instances, lat, lng),
-        ]
-        for f in futures:
-            key, val = f.result()
-            enrichment[key] = val
+map.addControl(drawControl);
 
-    # AEZ is cheap (no GEE call) — compute directly from data already fetched
-    enrichment["agro_ecological_zone"] = estimate_agro_ecological_zone(
-        satellite_data.get("rainfall"), satellite_data.get("air_temperature")
-    )
+const farmIcon = L.divIcon({
+    className: "",
+    html: `<div class="farm-pin"></div>`,
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+});
 
-    # ---- Yield Prediction (formula-based proxy, see yield_prediction.py) ----
-    # Uses the top-recommended crop + this farm's own NDVI. Area comes from
-    # the drawn polygon if one exists; without it, only per-hectare yield
-    # is estimated (no total tonnage).
-    try:
-        top_crop_name = crop_result["primary"]["crop"] if crop_result.get("primary") else None
-        area_ha = compute_polygon_area_ha(polygon) if polygon else None
-        yield_prediction = estimate_yield(
-            top_crop_name, satellite_data.get("ndvi"), area_ha,
-            evi=comprehensive_raw_values.get("evi"), ndre=comprehensive_raw_values.get("ndre"),
-        )
-    except Exception:
-        logger.exception("Yield prediction failed (non-fatal)")
-        yield_prediction = None
+map.on(L.Draw.Event.CREATED, function (e) {
+    drawnItems.clearLayers();
+    const layer = e.layer;
+    drawnItems.addLayer(layer);
 
-    response_payload = {
-        "score": result["final_score"],
-        "grade": result["grade"],
-        "components": result["components"],
-        "recommended_crops": crop_result,
-        "satellite_meta": satellite_data.get("satellite_meta"),
-        "ndvi_trend": satellite_data.get("ndvi_trend"),
-        "ndwi": satellite_data.get("ndwi"),
-        "rainfall_monthly": satellite_data.get("rainfall_monthly"),
-        "groundwater_trend": satellite_data.get("groundwater_trend"),
-        "climate_risk": climate_risk,
-        "coordinates": {"lat": lat, "lng": lng},
-        "data_reasons": data_reasons,
-        "enrichment": enrichment,
-        "yield_prediction": yield_prediction,
-        "elapsed_seconds": elapsed,
+    farmPolygon = layer.toGeoJSON();
+    const areaSqM = turf.area(farmPolygon);
+    const areaAcres = areaSqM / 4046.85642;
+    const areaHectare = areaSqM / 10000;
+
+    document.getElementById("farm-area").value =
+        `${areaAcres.toFixed(2)} Acres (${areaHectare.toFixed(2)} ha)`;
+});
+
+function placeMarker(lat, lng) {
+    if (marker) map.removeLayer(marker);
+    marker = L.marker([lat, lng], { icon: farmIcon }).addTo(map);
+}
+
+/* ===================================================================
+   Map Click / Search / Geocoder → shared "select a location" flow
+   =================================================================== */
+
+function formatCoords(lat, lng) {
+    const ns = lat >= 0 ? "N" : "S";
+    const ew = lng >= 0 ? "E" : "W";
+    return `${Math.abs(lat).toFixed(4)}° ${ns}, ${Math.abs(lng).toFixed(4)}° ${ew}`;
+}
+
+function selectLocation(lat, lng) {
+    document.getElementById("lat-input").value = lat.toFixed(6);
+    document.getElementById("lng-input").value = lng.toFixed(6);
+    placeMarker(lat, lng);
+
+    const coordsEl = document.getElementById("selected-location-coords");
+    if (coordsEl) coordsEl.textContent = formatCoords(lat, lng);
+
+    const card = document.getElementById("selected-location-card");
+    if (card) card.style.display = "block";
+
+    fetchLocationDetails(lat, lng);
+    fetchWeather(lat, lng);
+    fetchNearbyResources(lat, lng);
+}
+
+map.on("click", function (e) {
+    selectLocation(e.latlng.lat, e.latlng.lng);
+});
+
+async function fetchLocationDetails(lat, lng) {
+    try {
+        const response = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`
+        );
+        const data = await response.json();
+        const addr = data.address || {};
+
+        const village = addr.village || addr.town || addr.city || addr.hamlet || "";
+        const district = addr.county || addr.state_district || "";
+        const state = addr.state || "";
+
+        document.getElementById("village-input").value = village;
+        document.getElementById("district-input").value = district;
+        document.getElementById("state-input").value = state;
+        document.getElementById("pincode-input").value = addr.postcode || "";
+
+        const placeEl = document.getElementById("selected-location-place");
+        if (placeEl) {
+            placeEl.textContent = [village, state].filter(Boolean).join(", ") || "Unknown location";
+        }
+    } catch (err) {
+        console.error("Reverse Geocoding Error:", err);
     }
+}
 
-    # AI insight is generated from the payload above ONLY — grounded in
-    # real, already-computed numbers. If it fails or no key is set, the
-    # rest of the response is returned unaffected.
-    try:
-        ai_insight = generate_insight({**response_payload, "climate_risk": climate_risk})
-    except Exception:
-        logger.exception("AI insight generation failed (non-fatal)")
-        ai_insight = None
+/* ===================================================================
+   Location Search (Nominatim — free, no API key)
+   =================================================================== */
 
-    response_payload["ai_insight"] = ai_insight
-    return response_payload
+async function searchLocation() {
+    const input = document.getElementById("location-search");
+    const query = input.value.trim();
+    if (!query) return;
 
+    const btn = document.getElementById("search-btn");
+    btn.disabled = true;
 
-@app.route("/calculate", methods=["POST"])
-def calculate():
-    body = request.get_json(silent=True)
-    if not body:
-        return jsonify({"error": "Request body must be valid JSON"}), 400
+    try {
+        const res = await fetch(
+            `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=in&q=${encodeURIComponent(query)}`
+        );
+        const results = await res.json();
 
-    lat = body.get("lat")
-    lng = body.get("lng")
-    polygon = body.get("polygon")
-
-    if lat is None or lng is None:
-        return jsonify({"error": "Both 'lat' and 'lng' are required"}), 400
-
-    try:
-        lat = float(lat)
-        lng = float(lng)
-    except (TypeError, ValueError):
-        return jsonify({"error": "'lat' and 'lng' must be numbers"}), 400
-
-    if not (-90 <= lat <= 90):
-        return jsonify({"error": f"Latitude out of range: {lat}"}), 400
-    if not (-180 <= lng <= 180):
-        return jsonify({"error": f"Longitude out of range: {lng}"}), 400
-
-    try:
-        response_payload = compute_farmscore(lat, lng, polygon)
-    except Exception as exc:
-        logger.exception("compute_farmscore failed")
-        return jsonify({"error": "Failed to compute FarmScore", "detail": str(exc)}), 502
-
-    return jsonify(response_payload), 200
-
-
-@app.route("/spectral", methods=["POST"])
-def spectral():
-    """Hyperspectral-style crop intelligence — real Sentinel-2 multispectral
-    proxy indices (NDVI/NDRE/GNDVI/NDMI/MSI), a 0-100 Spectral Health
-    Score, rule-based flags, and grounded AI (or rule-based fallback)
-    irrigation/fertilization/crop-management recommendations. See
-    spectral_service.py for the honesty note on why this uses
-    multispectral proxies rather than claiming true hyperspectral data.
-    """
-    body = request.get_json(silent=True)
-    if not body:
-        return jsonify({"error": "Request body must be valid JSON"}), 400
-
-    lat = body.get("lat")
-    lng = body.get("lng")
-    polygon = body.get("polygon")
-
-    if lat is None or lng is None:
-        return jsonify({"error": "Both 'lat' and 'lng' are required"}), 400
-
-    try:
-        lat = float(lat)
-        lng = float(lng)
-    except (TypeError, ValueError):
-        return jsonify({"error": "'lat' and 'lng' must be numbers"}), 400
-
-    if not (-90 <= lat <= 90):
-        return jsonify({"error": f"Latitude out of range: {lat}"}), 400
-    if not (-180 <= lng <= 180):
-        return jsonify({"error": f"Longitude out of range: {lng}"}), 400
-
-    t0 = time.time()
-    logger.info("spectral lat=%.5f lng=%.5f", lat, lng)
-
-    try:
-        spectral_result = calculate_spectral_intelligence(lat=lat, lng=lng, polygon=polygon)
-    except Exception as exc:
-        logger.exception("Spectral intelligence computation failed")
-        return jsonify({"error": "Failed to compute spectral intelligence", "detail": str(exc)}), 502
-
-    try:
-        spectral_result["recommendations"] = generate_spectral_insight(spectral_result)
-    except Exception:
-        logger.exception("Spectral AI recommendation failed (non-fatal, using fallback)")
-        spectral_result["recommendations"] = {
-            "irrigation_advice": "Unavailable — recommendation service failed.",
-            "fertilization_advice": "Unavailable — recommendation service failed.",
-            "crop_management_advice": "Unavailable — recommendation service failed.",
+        if (!results.length) {
+            alert("Location not found. Try a different search.");
+            return;
         }
 
-    spectral_result["elapsed_seconds"] = round(time.time() - t0, 2)
-    return jsonify(spectral_result), 200
-
-
-@app.route("/chat", methods=["POST"])
-def chat():
-    """Chatbot endpoint — answers general agriculture questions and
-    questions about the currently-calculated farm. Grounded strictly in
-    the farm_context the frontend sends (the last /calculate response);
-    never invents farm-specific numbers not present in that context.
-
-    Request body:
-        {"message": str, "history": [{"role": "user"|"assistant", "text": str}], "farm_context": {...} | null}
-    """
-    body = request.get_json(silent=True)
-    if not body or not body.get("message"):
-        return jsonify({"error": "'message' is required"}), 400
-
-    message = str(body["message"]).strip()
-    if not message:
-        return jsonify({"error": "'message' cannot be empty"}), 400
-    if len(message) > 1000:
-        return jsonify({"error": "Message too long (max 1000 characters)"}), 400
-
-    history = body.get("history") or []
-    farm_context = body.get("farm_context")
-
-    try:
-        reply = generate_chat_reply(message, history=history, farm_context=farm_context)
-    except Exception:
-        logger.exception("Chat reply generation failed")
-        reply = None
-
-    if reply is None:
-        return jsonify({
-            "error": "AI assistant is currently unavailable. Check that GEMINI_API_KEY is configured."
-        }), 503
-
-    return jsonify({"reply": reply}), 200
-
-
-ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
-MAX_IMAGE_BYTES = 6 * 1024 * 1024  # 6 MB
-
-
-@app.route("/diagnose", methods=["POST"])
-def diagnose():
-    """Crop disease diagnosis from an uploaded photo (multipart/form-data,
-    field name 'image'). Uses Gemini's real vision capability — not a
-    fabricated model. Always includes an explicit confidence level and a
-    caveat that this isn't a substitute for expert advice.
-    """
-    if "image" not in request.files:
-        return jsonify({"error": "No 'image' file in request"}), 400
-
-    file = request.files["image"]
-    if not file or file.filename == "":
-        return jsonify({"error": "Empty file"}), 400
-
-    mime_type = file.mimetype
-    if mime_type not in ALLOWED_IMAGE_TYPES:
-        return jsonify({
-            "error": f"Unsupported image type '{mime_type}'. Use JPEG, PNG, or WEBP."
-        }), 400
-
-    image_bytes = file.read()
-    if len(image_bytes) > MAX_IMAGE_BYTES:
-        return jsonify({"error": "Image too large (max 6 MB)"}), 400
-    if len(image_bytes) == 0:
-        return jsonify({"error": "Empty file"}), 400
-
-    try:
-        result = diagnose_crop_image(image_bytes, mime_type)
-    except Exception:
-        logger.exception("Crop diagnosis failed")
-        result = None
-
-    if result is None:
-        return jsonify({
-            "error": "AI diagnosis is currently unavailable. Check that GEMINI_API_KEY is configured."
-        }), 503
-
-    return jsonify(result), 200
-
-
-@app.route("/report/pdf", methods=["POST"])
-def report_pdf():
-    """Generates the SatSource-style PDF report from a /calculate response.
-    Frontend sends the exact result object it already has (score, components,
-    enrichment, trends, etc.) — this endpoint never recomputes or invents
-    anything, it only lays out what was already calculated.
-    """
-    body = request.get_json(silent=True)
-    if not body or "score" not in body:
-        return jsonify({"error": "Request body must be a /calculate response (must include 'score')"}), 400
-
-    try:
-        pdf_bytes = generate_pdf_report(body)
-    except Exception as exc:
-        logger.exception("PDF report generation failed")
-        return jsonify({"error": "Failed to generate PDF report", "detail": str(exc)}), 500
-
-    return Response(
-        pdf_bytes,
-        mimetype="application/pdf",
-        headers={"Content-Disposition": "attachment; filename=FarmScore_Report.pdf"},
-    )
-
-
-@app.route("/webhook/whatsapp", methods=["GET"])
-def whatsapp_verify():
-    """Meta calls this once, when you click 'Verify and Save' on the
-    WhatsApp webhook config page — confirms you control this URL.
-    """
-    mode = request.args.get("hub.mode")
-    token = request.args.get("hub.verify_token")
-    challenge = request.args.get("hub.challenge")
-
-    result = whatsapp_service.verify_webhook(mode, token, challenge)
-    if result is not None:
-        return result, 200
-    return "Verification failed", 403
-
-
-@app.route("/webhook/whatsapp", methods=["POST"])
-def whatsapp_incoming():
-    """Meta calls this for every incoming message/status update. Always
-    return 200 quickly — Meta retries aggressively on non-200 responses.
-    """
-    payload = request.get_json(silent=True) or {}
-    try:
-        whatsapp_service.handle_incoming_message(payload, compute_farmscore, generate_chat_reply)
-    except Exception:
-        logger.exception("WhatsApp webhook processing failed")
-    return jsonify({"status": "ok"}), 200
-
-
-@app.route("/ndvi-heatmap", methods=["POST"])
-def ndvi_heatmap():
-    body = request.get_json(silent=True)
-    if not body:
-        return jsonify({"error": "Request body must be valid JSON"}), 400
-
-    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
-    if lat is None or lng is None:
-        return jsonify({"error": "Both 'lat' and 'lng' are required"}), 400
-
-    try:
-        lat, lng = float(lat), float(lng)
-    except (TypeError, ValueError):
-        return jsonify({"error": "'lat' and 'lng' must be numbers"}), 400
-
-    result = fetch_ndvi_heatmap(lat, lng, polygon)
-    if result is None:
-        return jsonify({"error": "Heatmap generation failed"}), 502
-    return jsonify(result), 200
-
-
-def _db_unavailable_response():
-    return jsonify({"error": "Database not configured. Set DATABASE_URL (Neon Postgres) on the server to enable Farm Management."}), 503
-
-
-@app.route("/farmers", methods=["POST"])
-@auth_service.require_auth()
-def create_farmer_route():
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    body = request.get_json(silent=True) or {}
-    if not body.get("name"):
-        return jsonify({"error": "'name' is required"}), 400
-
-    session = db_module.get_session()
-    try:
-        farmer = fms.create_farmer(
-            session, name=body["name"], phone=body.get("phone"),
-            village=body.get("village"), district=body.get("district"), state=body.get("state"),
-        )
-        return jsonify(farmer.to_dict()), 201
-    finally:
-        session.close()
-
-
-@app.route("/farmers", methods=["GET"])
-@auth_service.require_auth()
-def list_farmers_route():
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    session = db_module.get_session()
-    try:
-        farmers = fms.list_farmers(session, search=request.args.get("search"))
-        return jsonify({"farmers": [f.to_dict() for f in farmers]}), 200
-    finally:
-        session.close()
-
-
-@app.route("/farmers/<farmer_id>", methods=["GET"])
-@auth_service.require_auth()
-def get_farmer_route(farmer_id):
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    session = db_module.get_session()
-    try:
-        farmer = fms.get_farmer(session, farmer_id)
-        if not farmer:
-            return jsonify({"error": "Farmer not found"}), 404
-        return jsonify(farmer.to_dict(include_farms=True)), 200
-    finally:
-        session.close()
-
-
-@app.route("/farmers/<farmer_id>", methods=["PUT"])
-@auth_service.require_auth()
-def update_farmer_route(farmer_id):
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    body = request.get_json(silent=True) or {}
-    session = db_module.get_session()
-    try:
-        farmer = fms.update_farmer(session, farmer_id, **body)
-        if not farmer:
-            return jsonify({"error": "Farmer not found"}), 404
-        return jsonify(farmer.to_dict()), 200
-    finally:
-        session.close()
-
-
-@app.route("/farmers/<farmer_id>", methods=["DELETE"])
-@auth_service.require_auth()
-def delete_farmer_route(farmer_id):
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    session = db_module.get_session()
-    try:
-        ok = fms.delete_farmer(session, farmer_id)
-        if not ok:
-            return jsonify({"error": "Farmer not found"}), 404
-        return jsonify({"status": "deleted"}), 200
-    finally:
-        session.close()
-
-
-@app.route("/farmers/<farmer_id>/farms", methods=["POST"])
-@auth_service.require_auth()
-def create_farm_route(farmer_id):
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    body = request.get_json(silent=True) or {}
-    lat, lng = body.get("lat"), body.get("lng")
-    if lat is None or lng is None:
-        return jsonify({"error": "'lat' and 'lng' are required"}), 400
-
-    session = db_module.get_session()
-    try:
-        farm = fms.create_farm(
-            session, farmer_id=farmer_id, lat=float(lat), lng=float(lng),
-            label=body.get("label"), polygon=body.get("polygon"),
-            survey_method=body.get("survey_method", "point_only"),
-            land_use_type=body.get("land_use_type"), survey_number=body.get("survey_number"),
-        )
-        if not farm:
-            return jsonify({"error": "Farmer not found"}), 404
-        return jsonify(farm.to_dict()), 201
-    finally:
-        session.close()
-
-
-@app.route("/farmers/<farmer_id>/farms", methods=["GET"])
-@auth_service.require_auth()
-def list_farms_route(farmer_id):
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    session = db_module.get_session()
-    try:
-        farms = fms.list_farms_for_farmer(session, farmer_id)
-        return jsonify({"farms": [f.to_dict() for f in farms]}), 200
-    finally:
-        session.close()
-
-
-@app.route("/farms/<farm_id>", methods=["GET"])
-@auth_service.require_auth()
-def get_farm_route(farm_id):
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    session = db_module.get_session()
-    try:
-        farm = fms.get_farm(session, farm_id)
-        if not farm:
-            return jsonify({"error": "Farm not found"}), 404
-        return jsonify(farm.to_dict()), 200
-    finally:
-        session.close()
-
-
-@app.route("/farms/<farm_id>", methods=["PUT"])
-@auth_service.require_auth()
-def update_farm_route(farm_id):
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    body = request.get_json(silent=True) or {}
-    session = db_module.get_session()
-    try:
-        farm = fms.update_farm(session, farm_id, **body)
-        if not farm:
-            return jsonify({"error": "Farm not found"}), 404
-        return jsonify(farm.to_dict()), 200
-    finally:
-        session.close()
-
-
-@app.route("/farms/<farm_id>", methods=["DELETE"])
-@auth_service.require_auth()
-def delete_farm_route(farm_id):
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    session = db_module.get_session()
-    try:
-        ok = fms.delete_farm(session, farm_id)
-        if not ok:
-            return jsonify({"error": "Farm not found"}), 404
-        return jsonify({"status": "deleted"}), 200
-    finally:
-        session.close()
-
-
-@app.route("/farms/import", methods=["POST"])
-@auth_service.require_auth()
-def import_farm_boundary_route():
-    """Accepts a multipart file upload (.kml or .geojson/.json) and
-    returns the extracted polygon — does NOT save a farm; the frontend
-    takes this polygon and either shows it for confirmation or calls
-    /farmers/<id>/farms with it.
-    """
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded (field name must be 'file')"}), 400
-
-    f = request.files["file"]
-    filename = (f.filename or "").lower()
-    file_bytes = f.read()
-
-    if filename.endswith(".kml"):
-        polygon = fms.parse_kml_polygon(file_bytes)
-    elif filename.endswith(".geojson") or filename.endswith(".json"):
-        polygon = fms.parse_geojson_polygon(file_bytes)
-    else:
-        return jsonify({"error": "Unsupported file type — use .kml, .geojson, or .json"}), 400
-
-    if not polygon:
-        return jsonify({"error": "Could not extract a polygon from this file"}), 422
-
-    return jsonify({"polygon": polygon}), 200
-
-
-@app.route("/farms/auto-detect-boundary", methods=["POST"])
-@auth_service.require_auth()
-def auto_detect_boundary_route():
-    body = request.get_json(silent=True) or {}
-    lat, lng = body.get("lat"), body.get("lng")
-    if lat is None or lng is None:
-        return jsonify({"error": "'lat' and 'lng' are required"}), 400
-    return jsonify(fms.auto_detect_boundary(float(lat), float(lng))), 200
-
-
-@app.route("/spectral-indices", methods=["POST"])
-def spectral_indices_route():
-    body = request.get_json(silent=True) or {}
-    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
-    if lat is None or lng is None:
-        return jsonify({"error": "'lat' and 'lng' are required"}), 400
-    try:
-        result = fetch_extended_indices(float(lat), float(lng), polygon)
-        return jsonify(result), 200
-    except Exception as exc:
-        logger.exception("spectral-indices failed")
-        return jsonify({"error": "Failed to compute indices", "detail": str(exc)}), 502
-
-
-@app.route("/sar-moisture", methods=["POST"])
-def sar_moisture_route():
-    body = request.get_json(silent=True) or {}
-    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
-    if lat is None or lng is None:
-        return jsonify({"error": "'lat' and 'lng' are required"}), 400
-    try:
-        result = fetch_sar_moisture(float(lat), float(lng), polygon)
-        return jsonify(result), 200
-    except Exception as exc:
-        logger.exception("sar-moisture failed")
-        return jsonify({"error": "Failed to fetch SAR data", "detail": str(exc)}), 502
-
-
-@app.route("/historical-timeline", methods=["POST"])
-def historical_timeline_route():
-    body = request.get_json(silent=True) or {}
-    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
-    if lat is None or lng is None:
-        return jsonify({"error": "'lat' and 'lng' are required"}), 400
-    try:
-        result = fetch_ndvi_historical_timeline(
-            float(lat), float(lng), polygon,
-            start_year=int(body.get("start_year", 2018)),
-            end_year=body.get("end_year"),
-        )
-        return jsonify(result), 200
-    except Exception as exc:
-        logger.exception("historical-timeline failed")
-        return jsonify({"error": "Failed to fetch timeline", "detail": str(exc)}), 502
-
-
-@app.route("/before-after", methods=["POST"])
-def before_after_route():
-    body = request.get_json(silent=True) or {}
-    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
-    date1, date2 = body.get("date1"), body.get("date2")
-    if lat is None or lng is None or not date1 or not date2:
-        return jsonify({"error": "'lat', 'lng', 'date1', and 'date2' are required"}), 400
-    try:
-        result = fetch_before_after_comparison(float(lat), float(lng), date1, date2, polygon)
-        return jsonify(result), 200
-    except Exception as exc:
-        logger.exception("before-after failed")
-        return jsonify({"error": "Failed to fetch comparison", "detail": str(exc)}), 502
-
-
-@app.route("/vegetation-heatmap", methods=["POST"])
-def vegetation_heatmap_route():
-    body = request.get_json(silent=True) or {}
-    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
-    index = body.get("index", "ndvi")
-    if lat is None or lng is None:
-        return jsonify({"error": "'lat' and 'lng' are required"}), 400
-    result = fetch_vegetation_heatmap(float(lat), float(lng), polygon, index=index)
-    if result is None:
-        return jsonify({"error": "Heatmap generation failed"}), 502
-    return jsonify(result), 200
-
-
-@app.route("/crop-intelligence", methods=["POST"])
-def crop_intelligence_route():
-    body = request.get_json(silent=True) or {}
-    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
-    if lat is None or lng is None:
-        return jsonify({"error": "'lat' and 'lng' are required"}), 400
-
-    try:
-        lat, lng = float(lat), float(lng)
-        import datetime
-        current_month = datetime.datetime.utcnow().month
-
-        # Reuse the same 12-month NDVI curve cropping_intensity already computes
-        intensity = _fetch_cropping_intensity_for_ci(lat, lng, polygon)
-        monthly_ndvi = intensity.get("monthly_ndvi", [])
-
-        identification = identify_crop_heuristic(lat, lng, polygon, monthly_ndvi=monthly_ndvi)
-        growth_stage = detect_growth_stage(monthly_ndvi, current_month)
-
-        season = "kharif" if 6 <= current_month <= 11 else "rabi"
-        sowing_harvest = estimate_sowing_harvest(monthly_ndvi, identification.get("identified_crop"), season)
-
-        history = _fetch_cropping_history_for_ci(lat, lng, polygon)
-        rotation = detect_crop_rotation(history)
-
-        calendar_ref = CROP_CALENDAR.get(identification.get("identified_crop"), {})
-
-        return jsonify({
-            "identification": identification,
-            "growth_stage": growth_stage,
-            "sowing_harvest_prediction": sowing_harvest,
-            "crop_rotation": rotation,
-            "crop_calendar": calendar_ref,
-            "cropping_intensity": {"label": intensity.get("label"), "estimated_cycles": intensity.get("estimated_cycles")},
-        }), 200
-    except Exception as exc:
-        logger.exception("crop-intelligence failed")
-        return jsonify({"error": "Failed to compute crop intelligence", "detail": str(exc)}), 502
-
-
-@app.route("/historical-weather", methods=["POST"])
-def historical_weather_route():
-    body = request.get_json(silent=True) or {}
-    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
-    if lat is None or lng is None:
-        return jsonify({"error": "'lat' and 'lng' are required"}), 400
-    try:
-        result = fetch_historical_weather(
-            float(lat), float(lng), polygon,
-            start_year=int(body.get("start_year", 2015)),
-            end_year=body.get("end_year"),
-        )
-        return jsonify(result), 200
-    except Exception as exc:
-        logger.exception("historical-weather failed")
-        return jsonify({"error": "Failed to fetch historical weather", "detail": str(exc)}), 502
-
-
-@app.route("/soil-health", methods=["POST"])
-def soil_health_route():
-    body = request.get_json(silent=True) or {}
-    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
-    if lat is None or lng is None:
-        return jsonify({"error": "'lat' and 'lng' are required"}), 400
-    try:
-        result = fetch_soil_health(float(lat), float(lng), polygon)
-        return jsonify(result), 200
-    except Exception as exc:
-        logger.exception("soil-health failed")
-        return jsonify({"error": "Failed to fetch soil health", "detail": str(exc)}), 502
-
-
-@app.route("/soil-moisture", methods=["POST"])
-def soil_moisture_route():
-    body = request.get_json(silent=True) or {}
-    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
-    if lat is None or lng is None:
-        return jsonify({"error": "'lat' and 'lng' are required"}), 400
-    try:
-        result = fetch_soil_moisture(float(lat), float(lng), polygon)
-        return jsonify(result), 200
-    except Exception as exc:
-        logger.exception("soil-moisture failed")
-        return jsonify({"error": "Failed to fetch soil moisture", "detail": str(exc)}), 502
-
-
-@app.route("/flood-risk", methods=["POST"])
-def flood_risk_route():
-    body = request.get_json(silent=True) or {}
-    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
-    if lat is None or lng is None:
-        return jsonify({"error": "'lat' and 'lng' are required"}), 400
-    try:
-        lat, lng = float(lat), float(lng)
-        # Reuse topography (slope) and SAR flood signal already built in
-        # earlier phases instead of recomputing them.
-        topo = _fetch_topography_for_flood(lat, lng, polygon)
-        sar = _fetch_sar_for_flood(lat, lng, polygon)
-        result = fetch_flood_risk(
-            lat, lng, polygon,
-            slope_degrees=topo.get("slope_degrees"),
-            sar_flood_signal=sar.get("flood_signal") if sar.get("available") else None,
-        )
-        return jsonify(result), 200
-    except Exception as exc:
-        logger.exception("flood-risk failed")
-        return jsonify({"error": "Failed to compute flood risk", "detail": str(exc)}), 502
-
-
-@app.route("/farm-advisor", methods=["POST"])
-def farm_advisor_route():
-    """Accepts whatever farm data the frontend already has (score,
-    enrichment, crop intelligence, weather/soil, etc.) and returns a
-    synthesized, prioritized advisory. Never recomputes anything —
-    grounded only in what's passed in.
-    """
-    body = request.get_json(silent=True) or {}
-    if not body:
-        return jsonify({"error": "Request body must include farm data"}), 400
-
-    advisory = generate_farm_advisor(body)
-    if advisory is None:
-        return jsonify({
-            "advisory": None,
-            "reason": "AI advisor unavailable (GEMINI_API_KEY not set or request failed). Review the individual data sections directly.",
-        }), 200
-    return jsonify({"advisory": advisory}), 200
-
-
-@app.route("/risk-analysis", methods=["POST"])
-def risk_analysis_route():
-    """Same pattern as /farm-advisor — accepts already-computed risk
-    signals (climate_risk, flood_risk, drought_instances, growth_stage,
-    etc.) and returns one synthesized narrative.
-    """
-    body = request.get_json(silent=True) or {}
-    if not body:
-        return jsonify({"error": "Request body must include risk data"}), 400
-
-    analysis = generate_risk_analysis(body)
-    if analysis is None:
-        return jsonify({
-            "analysis": None,
-            "reason": "AI risk analysis unavailable (GEMINI_API_KEY not set or request failed). Review the individual risk_level fields directly.",
-        }), 200
-    return jsonify({"analysis": analysis}), 200
-
-
-@app.route("/credit-intelligence", methods=["POST"])
-@auth_service.require_auth()
-def credit_intelligence_route():
-    """Accepts the farm's already-computed result (score, yield_prediction,
-    climate_risk, enrichment.drought_instances, coordinates) — the exact
-    same object cached from /calculate — plus an optional pre-fetched
-    flood_risk. Computes it fresh from coordinates if not supplied.
-    Never recomputes score/yield/climate_risk — only combines what's
-    already there.
-    """
-    body = request.get_json(silent=True) or {}
-    if not body or "score" not in body:
-        return jsonify({"error": "Request body must be a /calculate response (must include 'score')"}), 400
-
-    try:
-        coords = body.get("coordinates", {})
-        lat, lng, polygon = coords.get("lat"), coords.get("lng"), body.get("polygon")
-
-        flood_risk = body.get("flood_risk")
-        if flood_risk is None and lat is not None and lng is not None:
-            try:
-                topo = _fetch_topography_for_flood(lat, lng, polygon)
-                sar = _fetch_sar_for_flood(lat, lng, polygon)
-                flood_risk = fetch_flood_risk(
-                    lat, lng, polygon,
-                    slope_degrees=topo.get("slope_degrees"),
-                    sar_flood_signal=sar.get("flood_signal") if sar.get("available") else None,
-                )
-            except Exception:
-                logger.exception("Flood risk fetch failed inside credit-intelligence (non-fatal)")
-                flood_risk = None
-
-        climate_risk = body.get("climate_risk", {})
-        drought = (body.get("enrichment") or {}).get("drought_instances") or {}
-
-        income = estimate_income(body.get("yield_prediction"), live_price=body.get("live_price"))
-        bcis = compute_bcis_score(
-            farmscore=body.get("score"),
-            climate_risk_level=climate_risk.get("level"),
-            flood_risk_level=flood_risk.get("risk_level") if flood_risk else None,
-            drought_years=drought.get("drought_years"),
-        )
-        loan_ceiling = recommend_loan_ceiling(income, bcis, policy_max_rs=body.get("policy_max_rs"))
-        freeze = auto_freeze_check(bcis)
-
-        result = {
-            "income_estimate": income,
-            "bcis": bcis,
-            "loan_ceiling": loan_ceiling,
-            "auto_freeze": freeze,
-            "flood_risk_used": flood_risk,
-        }
-
-        # Audit trail — every BCIS/loan-ceiling/auto-freeze decision gets
-        # logged (RBI evidence-pack requirement). Never lets a logging
-        # failure break the actual response.
-        if db_module.is_db_configured():
-            session = db_module.get_session()
-            try:
-                governance_service.log_event(
-                    session, event_type="bcis_score",
-                    summary=f"BCIS {bcis['score']}/100 ({bcis['tier']}), loan ceiling {loan_ceiling.get('loan_ceiling_rs')}",
-                    detail=result, user_id=getattr(request, "user", {}).get("user_id"),
-                    farmer_id=body.get("farmer_id"), farm_id=body.get("farm_id"), lat=lat, lng=lng,
-                )
-                if freeze["frozen"]:
-                    governance_service.log_event(
-                        session, event_type="auto_freeze", summary=freeze["reason"],
-                        detail=freeze, user_id=getattr(request, "user", {}).get("user_id"),
-                        farmer_id=body.get("farmer_id"), farm_id=body.get("farm_id"), lat=lat, lng=lng,
-                    )
-            finally:
-                session.close()
-
-        return jsonify(result), 200
-    except Exception as exc:
-        logger.exception("credit-intelligence failed")
-        return jsonify({"error": "Failed to compute credit intelligence", "detail": str(exc)}), 502
-
-
-@app.route("/insurance-claim", methods=["POST"])
-@auth_service.require_auth()
-def insurance_claim_route():
-    """Full claim assessment: verifies declared acreage/crop against
-    satellite, estimates loss from before/after imagery, flags fraud
-    signals, and returns a triage recommendation. All inputs are the
-    farmer/insurer's DECLARED values — this endpoint checks them
-    against what the satellite actually shows.
-    """
-    body = request.get_json(silent=True) or {}
-    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
-    declared_area_ha = body.get("declared_area_ha")
-    declared_crop = body.get("declared_crop")
-    date1, date2 = body.get("date1"), body.get("date2")  # pre-event, post-event
-
-    if lat is None or lng is None:
-        return jsonify({"error": "'lat' and 'lng' are required"}), 400
-    if not date1 or not date2:
-        return jsonify({"error": "'date1' (pre-event) and 'date2' (post-event) are required"}), 400
-
-    try:
-        lat, lng = float(lat), float(lng)
-
-        measured_area_ha = compute_polygon_area_ha(polygon) if polygon else None
-        acreage_check = verify_acreage(declared_area_ha, measured_area_ha)
-
-        identification = _identify_crop_for_claim(lat, lng, polygon)
-        crop_check = verify_crop(declared_crop, identification)
-
-        before_after = _fetch_before_after_for_claim(lat, lng, date1, date2, polygon)
-        loss = estimate_loss(before_after)
-
-        fraud = detect_fraud_signals(acreage_check, crop_check, identification.get("peak_ndvi"))
-        claim = assess_claim(acreage_check, crop_check, loss, fraud)
-
-        if db_module.is_db_configured():
-            session = db_module.get_session()
-            try:
-                governance_service.log_event(
-                    session, event_type="insurance_claim",
-                    summary=f"Claim recommendation: {claim['recommendation']} — {claim['reason']}",
-                    detail=claim, user_id=getattr(request, "user", {}).get("user_id"),
-                    farmer_id=body.get("farmer_id"), farm_id=body.get("farm_id"), lat=lat, lng=lng,
-                )
-            finally:
-                session.close()
-
-        return jsonify(claim), 200
-    except Exception as exc:
-        logger.exception("insurance-claim failed")
-        return jsonify({"error": "Failed to assess claim", "detail": str(exc)}), 502
-
-
-@app.route("/auth/register", methods=["POST"])
-def auth_register_route():
-    """The FIRST registration ever becomes an admin automatically
-    (bootstrap). After that, only an existing admin can register new
-    users — pass their token in the Authorization header.
-    """
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-
-    body = request.get_json(silent=True) or {}
-    username, password, name = body.get("username"), body.get("password"), body.get("name")
-    if not username or not password or not name:
-        return jsonify({"error": "'username', 'password', and 'name' are required"}), 400
-
-    session = db_module.get_session()
-    try:
-        is_first_user = session.query(auth_service.User).count() == 0
-        if not is_first_user:
-            auth_header = request.headers.get("Authorization", "")
-            if not auth_header.startswith("Bearer "):
-                return jsonify({"error": "Only an admin can register additional users — log in as admin first"}), 401
-            payload = auth_service.decode_token(auth_header[len("Bearer "):])
-            if not payload or payload.get("role") != "admin":
-                return jsonify({"error": "Only an admin can register additional users"}), 403
-
-        existing = session.query(auth_service.User).filter(auth_service.User.username == username).first()
-        if existing:
-            return jsonify({"error": "Username already taken"}), 409
-
-        role = body.get("role", "field_officer")
-        user = auth_service.register_user(session, username, password, name, role)
-        token = auth_service.generate_token(user)
-        return jsonify({"user": user.to_dict(), "token": token}), 201
-    finally:
-        session.close()
-
-
-@app.route("/auth/login", methods=["POST"])
-def auth_login_route():
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-
-    body = request.get_json(silent=True) or {}
-    username, password = body.get("username"), body.get("password")
-    if not username or not password:
-        return jsonify({"error": "'username' and 'password' are required"}), 400
-
-    session = db_module.get_session()
-    try:
-        user = auth_service.authenticate_user(session, username, password)
-        if not user:
-            return jsonify({"error": "Invalid username or password"}), 401
-        token = auth_service.generate_token(user)
-        return jsonify({"user": user.to_dict(), "token": token}), 200
-    finally:
-        session.close()
-
-
-@app.route("/auth/me", methods=["GET"])
-@auth_service.require_auth()
-def auth_me_route():
-    return jsonify({"user": request.user}), 200
-
-
-@app.route("/admin/users", methods=["GET"])
-@auth_service.require_auth(["admin"])
-def admin_list_users_route():
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    session = db_module.get_session()
-    try:
-        users = session.query(auth_service.User).order_by(auth_service.User.created_at.desc()).all()
-        return jsonify({"users": [u.to_dict() for u in users]}), 200
-    finally:
-        session.close()
-
-
-@app.route("/admin/users", methods=["POST"])
-@auth_service.require_auth(["admin"])
-def admin_create_user_route():
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    body = request.get_json(silent=True) or {}
-    username, password, name = body.get("username"), body.get("password"), body.get("name")
-    role = body.get("role", "field_officer")
-    if not username or not password or not name:
-        return jsonify({"error": "'username', 'password', and 'name' are required"}), 400
-    if role not in ("admin", "field_officer"):
-        return jsonify({"error": "'role' must be 'admin' or 'field_officer'"}), 400
-
-    session = db_module.get_session()
-    try:
-        existing = session.query(auth_service.User).filter(auth_service.User.username == username).first()
-        if existing:
-            return jsonify({"error": "Username already taken"}), 409
-        user = auth_service.register_user(session, username, password, name, role)
-        return jsonify({"user": user.to_dict()}), 201
-    finally:
-        session.close()
-
-
-@app.route("/admin/users/<user_id>", methods=["DELETE"])
-@auth_service.require_auth(["admin"])
-def admin_delete_user_route(user_id):
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    if user_id == request.user.get("user_id"):
-        return jsonify({"error": "Cannot delete your own account while logged in as it"}), 400
-
-    session = db_module.get_session()
-    try:
-        user = session.query(auth_service.User).filter(auth_service.User.id == user_id).first()
-        if not user:
-            return jsonify({"error": "User not found"}), 404
-        session.delete(user)
-        session.commit()
-        return jsonify({"status": "deleted"}), 200
-    finally:
-        session.close()
-
-
-@app.route("/portfolio/summary", methods=["GET"])
-@auth_service.require_auth()
-def portfolio_summary_route():
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    session = db_module.get_session()
-    try:
-        farmers = fms.list_farmers(session)
-        all_farms = []
-        for f in farmers:
-            all_farms.extend(fms.list_farms_for_farmer(session, f.id))
-
-        total_area = sum(f.area_ha for f in all_farms if f.area_ha)
-        farms_with_area = sum(1 for f in all_farms if f.area_ha)
-
-        survey_method_counts: dict = {}
-        for f in all_farms:
-            key = f.survey_method or "unknown"
-            survey_method_counts[key] = survey_method_counts.get(key, 0) + 1
-
-        district_counts: dict = {}
-        for farmer in farmers:
-            key = farmer.district or "Unspecified"
-            district_counts[key] = district_counts.get(key, 0) + 1
-
-        return jsonify({
-            "total_farmers": len(farmers),
-            "total_farms": len(all_farms),
-            "total_area_ha": round(total_area, 2),
-            "farms_with_measured_area": farms_with_area,
-            "survey_method_breakdown": survey_method_counts,
-            "farmers_by_district": district_counts,
-        }), 200
-    finally:
-        session.close()
-
-
-@app.route("/audit-log", methods=["GET"])
-@auth_service.require_auth(["admin"])
-def audit_log_route():
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    session = db_module.get_session()
-    try:
-        event_type = request.args.get("event_type")
-        farmer_id = request.args.get("farmer_id")
-        limit = min(int(request.args.get("limit", 100)), 500)
-        events = governance_service.list_events(session, event_type=event_type, farmer_id=farmer_id, limit=limit)
-        include_detail = request.args.get("include_detail") == "true"
-        return jsonify({"events": [e.to_dict(include_detail=include_detail) for e in events]}), 200
-    finally:
-        session.close()
-
-
-@app.route("/farmers/<farmer_id>/consent", methods=["GET"])
-@auth_service.require_auth()
-def get_consent_route(farmer_id):
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    session = db_module.get_session()
-    try:
-        records = fms.get_consents_for_farmer(session, farmer_id)
-        return jsonify({"consents": [r.to_dict() for r in records]}), 200
-    finally:
-        session.close()
-
-
-@app.route("/farmers/<farmer_id>/consent", methods=["POST"])
-@auth_service.require_auth()
-def set_consent_route(farmer_id):
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    body = request.get_json(silent=True) or {}
-    consent_type, granted = body.get("consent_type"), body.get("granted")
-    if not consent_type or granted is None:
-        return jsonify({"error": "'consent_type' and 'granted' (true/false) are required"}), 400
-
-    session = db_module.get_session()
-    try:
-        record = fms.set_consent(session, farmer_id, consent_type, bool(granted), notes=body.get("notes"))
-        governance_service.log_event(
-            session, event_type="consent_change",
-            summary=f"Consent '{consent_type}' set to {'granted' if granted else 'revoked'} for farmer {farmer_id}",
-            detail=record.to_dict(), user_id=getattr(request, "user", {}).get("user_id"), farmer_id=farmer_id,
-        )
-        return jsonify(record.to_dict()), 200
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    finally:
-        session.close()
-
-
-@app.route("/farmers/<farmer_id>/request-deletion", methods=["POST"])
-@auth_service.require_auth()
-def request_deletion_route(farmer_id):
-    """DPDP-style deletion request — flags the farmer's consent records
-    with a timestamp (the '72 hours' clock start). Does NOT delete data
-    automatically; an admin/ops person must complete the actual
-    deletion as a deliberate, irreversible step.
-    """
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    body = request.get_json(silent=True) or {}
-    session = db_module.get_session()
-    try:
-        result = fms.request_deletion(session, farmer_id, notes=body.get("notes"))
-        governance_service.log_event(
-            session, event_type="deletion_request", summary=f"Deletion requested for farmer {farmer_id}",
-            detail=result, user_id=getattr(request, "user", {}).get("user_id"), farmer_id=farmer_id,
-        )
-        return jsonify(result), 200
-    finally:
-        session.close()
-
-
-@app.route("/farmers/<farmer_id>/loans", methods=["POST"])
-@auth_service.require_auth()
-def create_loan_route(farmer_id):
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    body = request.get_json(silent=True) or {}
-    session = db_module.get_session()
-    try:
-        loan = governance_service.create_loan(
-            session, farmer_id=farmer_id, farm_id=body.get("farm_id"),
-            requested_amount_rs=body.get("requested_amount_rs"),
-            crop=body.get("crop"), season=body.get("season"),
-        )
-        governance_service.log_event(
-            session, event_type="loan_stage_change",
-            summary=f"Loan created for farmer {farmer_id} — stage 'Application'",
-            detail=loan.to_dict(), user_id=getattr(request, "user", {}).get("user_id"),
-            farmer_id=farmer_id, farm_id=body.get("farm_id"),
-        )
-        return jsonify(loan.to_dict()), 201
-    finally:
-        session.close()
-
-
-@app.route("/farmers/<farmer_id>/loans", methods=["GET"])
-@auth_service.require_auth()
-def list_loans_route(farmer_id):
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    session = db_module.get_session()
-    try:
-        loans = governance_service.list_loans_for_farmer(session, farmer_id)
-        return jsonify({"loans": [l.to_dict() for l in loans]}), 200
-    finally:
-        session.close()
-
-
-@app.route("/loans/<loan_id>/advance", methods=["POST"])
-@auth_service.require_auth()
-def advance_loan_route(loan_id):
-    """Moves a loan to the next stage: Application -> Disbursement ->
-    In-Season -> Pre-Harvest -> Renewal (matches the Bhumi doc's
-    5-stage loan lifecycle). Cannot move backward.
-    """
-    if not db_module.is_db_configured():
-        return _db_unavailable_response()
-    body = request.get_json(silent=True) or {}
-    new_stage = body.get("stage")
-    if not new_stage:
-        return jsonify({"error": "'stage' is required"}), 400
-
-    session = db_module.get_session()
-    try:
-        result = governance_service.advance_loan_stage(
-            session, loan_id, new_stage,
-            approved_ceiling_rs=body.get("approved_ceiling_rs"),
-            bcis_tier_at_approval=body.get("bcis_tier_at_approval"),
-        )
-        if result is None:
-            return jsonify({"error": "Loan not found"}), 404
-        if "error" in result:
-            return jsonify(result), 400
-
-        loan = result["loan"]
-        governance_service.log_event(
-            session, event_type="loan_stage_change",
-            summary=f"Loan {loan_id} moved from '{result['old_stage']}' to '{result['new_stage']}'",
-            detail=loan, user_id=getattr(request, "user", {}).get("user_id"),
-            farmer_id=loan.get("farmer_id"), farm_id=loan.get("farm_id"), loan_id=loan_id,
-        )
-        return jsonify(loan), 200
-    finally:
-        session.close()
-
-
-@app.route("/comprehensive-score", methods=["POST"])
-def comprehensive_score_route():
-    """Computes the 20-parameter weighted-average score (Vegetation +
-    Radar + Weather + Temperature). Fetches every parameter in
-    parallel from the existing modules that already compute them —
-    nothing here is a duplicate satellite call for indices already
-    available elsewhere in this app.
-    """
-    body = request.get_json(silent=True) or {}
-    lat, lng, polygon = body.get("lat"), body.get("lng"), body.get("polygon")
-    custom_weights = body.get("weights")  # optional override
-
-    if lat is None or lng is None:
-        return jsonify({"error": "'lat' and 'lng' are required"}), 400
-
-    try:
-        lat, lng = float(lat), float(lng)
-    except (TypeError, ValueError):
-        return jsonify({"error": "'lat' and 'lng' must be numbers"}), 400
-
-    from concurrent.futures import ThreadPoolExecutor as _TPE
-
-    def _safe(name, fn, *args):
-        try:
-            return name, fn(*args)
-        except Exception:
-            logger.exception("comprehensive-score sub-fetch '%s' failed (non-fatal)", name)
-            return name, None
-
-    with _TPE(max_workers=3) as pool:
-        futures = [
-            pool.submit(_safe, "satellite", fetch_farm_data, lat, lng, polygon),
-            pool.submit(_safe, "extended_indices", fetch_extended_indices, lat, lng, polygon),
-            pool.submit(_safe, "spectral", calculate_spectral_intelligence, lat, lng, polygon),
-            pool.submit(_safe, "sar", _fetch_sar_for_flood, lat, lng, polygon),
-            pool.submit(_safe, "solar", fetch_solar_radiation, lat, lng, polygon),
-            pool.submit(_safe, "spi", fetch_spi, lat, lng, polygon),
-            pool.submit(_safe, "gdd", fetch_gdd, lat, lng, polygon),
-            pool.submit(_safe, "spei", fetch_spei_proxy, lat, lng, polygon),
-        ]
-        results = {name: val for name, val in (f.result() for f in futures)}
-
-    satellite = results.get("satellite") or {}
-    extended = results.get("extended_indices") or {}
-    spectral = results.get("spectral") or {}
-    sar = results.get("sar") or {}
-    solar = results.get("solar") or {}
-    spi = results.get("spi") or {}
-    gdd = results.get("gdd") or {}
-    spei = results.get("spei") or {}
-
-    ndre_val = None
-    if spectral.get("indices", {}).get("nitrogen"):
-        ndre_val = spectral["indices"]["nitrogen"].get("raw_value")
-
-    raw_values = {
-        "ndvi": satellite.get("ndvi"),
-        "evi": extended.get("evi"),
-        "savi": extended.get("savi"),
-        "msavi": extended.get("msavi"),
-        "ndre": ndre_val,
-        "ndmi": satellite.get("ndmi"),
-        "ndwi": extended.get("ndwi"),
-        "ci_green": extended.get("ci_green"),
-        "ci_rededge": extended.get("ci_rededge"),
-        "vv": sar.get("vv_db") if sar.get("available") else None,
-        "vh": sar.get("vh_db") if sar.get("available") else None,
-        "vh_vv": sar.get("vh_vv_ratio") if sar.get("available") else None,
-        "rvi": sar.get("rvi") if sar.get("available") else None,
-        "rainfall": satellite.get("rainfall"),
-        # FIX: this was reading satellite.get("temperature") -- the MODIS LST
-        # value, same field used for "lst" below -- instead of the separate
-        # ERA5-Land air_temperature field fetch_farm_data() actually computes.
-        # That made air_temp == lst every time, which the safety check in
-        # comprehensive_score_service.py correctly detected and nulled out,
-        # showing as "Air Temperature -- no data" in the UI.
-        "air_temp": satellite.get("air_temperature"),
-        "solar_radiation": solar.get("avg_daily_solar_radiation_mj_m2") if solar.get("available") else None,
-        "spi": spi.get("spi") if spi.get("available") else None,
-        "spei": spei.get("spei_proxy") if spei.get("available") else None,
-        "gdd": gdd.get("gdd") if gdd.get("available") else None,
-        "lst": satellite.get("temperature"),
+        const lat = parseFloat(results[0].lat);
+        const lng = parseFloat(results[0].lon);
+
+        map.setView([lat, lng], 15);
+        selectLocation(lat, lng);
+    } catch (err) {
+        console.error("Search error:", err);
+        alert("Search failed. Please check your connection and try again.");
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+document.getElementById("search-btn").addEventListener("click", searchLocation);
+document.getElementById("location-search").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") searchLocation();
+});
+
+/* ===================================================================
+   Current Location Button
+   =================================================================== */
+
+function getCurrentLocation() {
+    if (!navigator.geolocation) {
+        alert("Geolocation is not supported by your browser.");
+        return;
     }
 
-    weights = custom_weights if custom_weights else DEFAULT_WEIGHTS
-    result = compute_comprehensive_score(raw_values, weights=weights)
-    result["coordinates"] = {"lat": lat, "lng": lng}
-    result["raw_fetch_detail"] = {"spi": spi, "spei": spei, "gdd": gdd, "solar_radiation": solar, "sar": sar}
+    const btn = document.getElementById("location-btn");
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `<span class="btn-icon">📍</span> Locating…`;
 
-    return jsonify(result), 200
+    navigator.geolocation.getCurrentPosition(
+        function (position) {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+            map.setView([lat, lng], 15);
+            selectLocation(lat, lng);
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        },
+        function (error) {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+            switch (error.code) {
+                case error.PERMISSION_DENIED:
+                    alert("Location permission denied.");
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    alert("Location unavailable.");
+                    break;
+                case error.TIMEOUT:
+                    alert("Location request timed out.");
+                    break;
+                default:
+                    alert("Unable to get current location.");
+            }
+            console.error(error);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+}
 
+document.getElementById("location-btn").addEventListener("click", getCurrentLocation);
 
-@app.route("/glossary", methods=["GET"])
-def glossary():
-    return jsonify({"terms": GLOSSARY_TERMS}), 200
+/* ===================================================================
+   Weather Forecast (Open-Meteo — free, no API key required)
+   =================================================================== */
 
+const WMO_WEATHER = {
+    0:  { icon: "☀️", label: "Clear sky" },
+    1:  { icon: "🌤️", label: "Mainly clear" },
+    2:  { icon: "⛅", label: "Partly cloudy" },
+    3:  { icon: "☁️", label: "Overcast" },
+    45: { icon: "🌫️", label: "Fog" },
+    48: { icon: "🌫️", label: "Depositing fog" },
+    51: { icon: "🌦️", label: "Light drizzle" },
+    53: { icon: "🌦️", label: "Drizzle" },
+    55: { icon: "🌦️", label: "Dense drizzle" },
+    61: { icon: "🌧️", label: "Light rain" },
+    63: { icon: "🌧️", label: "Rain" },
+    65: { icon: "🌧️", label: "Heavy rain" },
+    71: { icon: "❄️", label: "Light snow" },
+    73: { icon: "❄️", label: "Snow" },
+    75: { icon: "❄️", label: "Heavy snow" },
+    80: { icon: "🌦️", label: "Rain showers" },
+    81: { icon: "🌦️", label: "Rain showers" },
+    82: { icon: "🌧️", label: "Violent showers" },
+    95: { icon: "⛈️", label: "Thunderstorm" },
+    96: { icon: "⛈️", label: "Thunderstorm, hail" },
+    99: { icon: "⛈️", label: "Thunderstorm, hail" },
+};
 
-@app.route("/mandi-price", methods=["GET"])
-def mandi_price():
-    """Query params: commodity, state, district (optional).
-    Requires DATA_GOV_IN_KEY to be configured — see govt_data_service.py.
-    """
-    commodity = request.args.get("commodity")
-    state = request.args.get("state")
-    district = request.args.get("district")
+function weatherInfo(code) {
+    return WMO_WEATHER[code] || { icon: "🌡️", label: "Unknown" };
+}
 
-    if not commodity or not state:
-        return jsonify({"error": "'commodity' and 'state' query params are required"}), 400
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-    result = fetch_mandi_price(commodity, state, district)
-    return jsonify(result), 200
+async function fetchWeather(lat, lng) {
+    const card = document.getElementById("weather-card");
 
+    try {
+        const url =
+            `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
+            `&current_weather=true` +
+            `&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_sum` +
+            `&timezone=auto`;
 
-@app.route("/major-crops", methods=["GET"])
-def major_crops():
-    """Query params: district, state.
-    Requires DATA_GOV_IN_KEY to be configured — see govt_data_service.py.
-    """
-    district = request.args.get("district")
-    state = request.args.get("state")
+        const response = await fetch(url);
+        const data = await response.json();
+        if (!data.current_weather) throw new Error("No weather data");
 
-    if not district or not state:
-        return jsonify({"error": "'district' and 'state' query params are required"}), 400
+        const current = data.current_weather;
+        const info = weatherInfo(current.weathercode);
 
-    result = fetch_major_crops_in_region(district, state)
-    return jsonify(result), 200
+        document.getElementById("weather-icon").textContent = info.icon;
+        document.getElementById("weather-temp").textContent = `${Math.round(current.temperature)}°C`;
+        document.getElementById("weather-desc").textContent = info.label;
+        document.getElementById("weather-wind").textContent = `💨 ${Math.round(current.windspeed)} km/h`;
 
+        const daily = data.daily;
+        const strip = document.getElementById("weather-forecast");
+        strip.innerHTML = daily.time.slice(0, 5).map((dateStr, i) => {
+            const d = new Date(dateStr);
+            const dInfo = weatherInfo(daily.weathercode[i]);
+            const max = Math.round(daily.temperature_2m_max[i]);
+            const min = Math.round(daily.temperature_2m_min[i]);
+            const rain = daily.precipitation_sum[i];
+            return `
+                <div class="weather-day">
+                    <div class="wd-label">${i === 0 ? "Today" : DAY_NAMES[d.getDay()]}</div>
+                    <div class="wd-icon">${dInfo.icon}</div>
+                    <div class="wd-temp">${max}° <span>${min}°</span></div>
+                    ${rain > 0 ? `<div class="wd-rain">💧${rain}mm</div>` : ""}
+                </div>`;
+        }).join("");
 
-@app.errorhandler(404)
-def not_found(_):
-    return jsonify({"error": "Endpoint not found"}), 404
+        card.style.display = "block";
+    } catch (err) {
+        console.error("Weather fetch error:", err);
+        card.style.display = "none";
+    }
+}
 
+/* ===================================================================
+   Nearby Resources (real OSM data via the free Overpass API)
+   =================================================================== */
 
-@app.errorhandler(405)
-def method_not_allowed(_):
-    return jsonify({"error": "Method not allowed"}), 405
+const NODE_RESOURCE_TYPES = [
+    { tag: `node["amenity"="bank"]`,        icon: "🏦", label: "Bank Branch" },
+    { tag: `way["power"="substation"]`,     icon: "⚡", label: "Power Substation" },
+    { tag: `node["power"="substation"]`,    icon: "⚡", label: "Power Substation" },
+    { tag: `node["amenity"="marketplace"]`, icon: "🏪", label: "Market / Mandi" },
+    { tag: `node["amenity"="hospital"]`,    icon: "🏥", label: "Hospital" },
+    { tag: `node["amenity"="fuel"]`,        icon: "⛽", label: "Petrol Pump" },
+    { tag: `node["railway"="station"]`,     icon: "🚉", label: "Railway Station" },
+    { tag: `node["amenity"="school"]`,      icon: "🏫", label: "School" },
+];
 
+const WAY_RESOURCE_TYPES = [
+    { tag: `way["waterway"="canal"]`, icon: "💧", label: "Canal" },
+    { tag: `way["highway"~"^(trunk|primary|secondary)$"]`, icon: "🛣️", label: "Main Road" },
+    { tag: `way["natural"="water"]`, icon: "🌊", label: "Water Body" },
+    { tag: `way["waterway"="river"]`, icon: "🌊", label: "Water Body" },
+];
 
-@app.errorhandler(500)
-def internal_error(_):
-    return jsonify({"error": "Internal server error"}), 500
+const RESOURCE_LABELS = [
+    "Bank Branch", "Power Substation", "Canal", "Main Road", "Water Body",
+    "Market / Mandi", "Hospital", "Petrol Pump", "Railway Station", "School",
+];
+const RESOURCE_ICONS = {
+    "Bank Branch": "🏦", "Power Substation": "⚡", "Canal": "💧", "Main Road": "🛣️",
+    "Water Body": "🌊", "Market / Mandi": "🏪", "Hospital": "🏥", "Petrol Pump": "⛽",
+    "Railway Station": "🚉", "School": "🏫",
+};
 
+function matchesLabel(label, tags) {
+    return (
+        (label === "Bank Branch" && tags.amenity === "bank") ||
+        (label === "Power Substation" && tags.power === "substation") ||
+        (label === "Market / Mandi" && tags.amenity === "marketplace") ||
+        (label === "Hospital" && tags.amenity === "hospital") ||
+        (label === "Petrol Pump" && tags.amenity === "fuel") ||
+        (label === "Railway Station" && tags.railway === "station") ||
+        (label === "School" && tags.amenity === "school")
+    );
+}
 
-if __name__ == "__main__":
-    logger.info("Starting FarmScore API on %s:%d", HOST, PORT)
-    app.run(host=HOST, port=PORT, debug=DEBUG)
+/** Nearest node-type POIs — fast, reliable, no way-geometry issues. */
+async function fetchNearestNodes(lat, lng, radius) {
+    const clauses = NODE_RESOURCE_TYPES.map(t => `${t.tag}(around:${radius},${lat},${lng});`).join("\n");
+    const query = `[out:json][timeout:25];(${clauses});out center;`;
+
+    const res = await fetch("https://overpass-api.de/api/interpreter", {
+        method: "POST",
+        body: "data=" + encodeURIComponent(query),
+    });
+    const data = await res.json();
+    const elements = data.elements || [];
+    const origin = [lng, lat];
+
+    const nearest = {};
+    elements.forEach(el => {
+        const plat = el.lat ?? el.center?.lat;
+        const plon = el.lon ?? el.center?.lon;
+        if (plat == null || plon == null) return;
+
+        const tags = el.tags || {};
+        const distanceKm = turf.distance(origin, [plon, plat], { units: "kilometers" });
+
+        ["Bank Branch", "Power Substation", "Market / Mandi", "Hospital", "Petrol Pump", "Railway Station", "School"]
+            .forEach(label => {
+                if (matchesLabel(label, tags) && (nearest[label] == null || distanceKm < nearest[label])) {
+                    nearest[label] = distanceKm;
+                }
+            });
+    });
+
+    return nearest;
+}
+
+/** Nearest road/canal — uses full way geometry (out geom) so the distance is
+ * to the closest point actually inside the search radius, not the centroid
+ * of the entire road/canal (which can be many km away). */
+async function fetchNearestWays(lat, lng, radius) {
+    const clauses = WAY_RESOURCE_TYPES.map(t => `${t.tag}(around:${radius},${lat},${lng});`).join("\n");
+    const query = `[out:json][timeout:25];(${clauses});out geom;`;
+
+    const res = await fetch("https://overpass-api.de/api/interpreter", {
+        method: "POST",
+        body: "data=" + encodeURIComponent(query),
+    });
+    const data = await res.json();
+    const elements = data.elements || [];
+    const origin = [lng, lat];
+
+    const nearest = {};
+    elements.forEach(el => {
+        if (!el.geometry) return;
+        const tags = el.tags || {};
+
+        let label = null;
+        if (tags.waterway === "canal") label = "Canal";
+        else if (["trunk", "primary", "secondary"].includes(tags.highway)) label = "Main Road";
+        else if (tags.natural === "water" || tags.waterway === "river") label = "Water Body";
+        if (!label) return;
+
+        // Distance to the nearest vertex actually on this way — far more
+        // accurate than the way's overall centroid for long roads/canals.
+        let minDist = Infinity;
+        el.geometry.forEach(pt => {
+            const d = turf.distance(origin, [pt.lon, pt.lat], { units: "kilometers" });
+            if (d < minDist) minDist = d;
+        });
+
+        if (minDist < Infinity && (nearest[label] == null || minDist < nearest[label])) {
+            nearest[label] = minDist;
+        }
+    });
+
+    return nearest;
+}
+
+async function fetchNearbyResources(lat, lng) {
+    const section = document.getElementById("nearby-resources-card");
+    const list = document.getElementById("nearby-resources-list");
+    const accessEl = document.getElementById("accessibility-value");
+
+    const nodeRadius = 25000; // 25 km — rural amenities are often sparse
+    const wayRadius = 15000;  // 15 km — roads/canals are usually much closer
+
+    // Run both independently: if one fails (e.g. Overpass timeout on a
+    // heavy way query), the other's results still render instead of the
+    // whole card going blank.
+    const [nodeResult, wayResult] = await Promise.allSettled([
+        fetchNearestNodes(lat, lng, nodeRadius),
+        fetchNearestWays(lat, lng, wayRadius),
+    ]);
+
+    const distances = {
+        ...(nodeResult.status === "fulfilled" ? nodeResult.value : {}),
+        ...(wayResult.status === "fulfilled" ? wayResult.value : {}),
+    };
+
+    if (nodeResult.status === "rejected") console.error("Nearby nodes fetch failed:", nodeResult.reason);
+    if (wayResult.status === "rejected") console.error("Nearby ways fetch failed:", wayResult.reason);
+
+    if (nodeResult.status === "rejected" && wayResult.status === "rejected") {
+        section.style.display = "none";
+        return;
+    }
+
+    list.innerHTML = RESOURCE_LABELS.map(label => {
+        const d = distances[label];
+        return `
+            <div class="nr-row">
+                <span class="nr-icon">${RESOURCE_ICONS[label]}</span>
+                <span class="nr-label">${label}</span>
+                <span class="nr-dist">${
+                    d == null
+                        ? `<span class="nr-notfound">not found nearby</span>`
+                        : d < 1
+                            ? `${Math.round(d * 1000)} m`
+                            : `${d.toFixed(2)} km`
+                }</span>
+            </div>`;
+    }).join("");
+
+    // ---- Accessibility index — a transparent, real-distance-derived
+    // score (NOT a model prediction), calibrated for rural India where a
+    // 5-15km distance to the nearest road/market is normal. Categories
+    // not found nearby are excluded from the average, not counted as 0. ----
+    const scores = [];
+    if (distances["Main Road"] != null) scores.push(Math.max(0, 100 - distances["Main Road"] * 5));
+    if (distances["Market / Mandi"] != null) scores.push(Math.max(0, 100 - distances["Market / Mandi"] * 4));
+
+    accessEl.textContent = scores.length
+        ? `${Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)}%`
+        : "N/A";
+
+    section.style.display = "block";
+}
+
+/* ===================================================================
+   Grade Assignment
+   =================================================================== */
+
+function gradeStyle(grade) {
+    const map = {
+        Excellent: { bg: "rgba(52, 211, 153, 0.15)", color: "#34d399" },
+        Good:      { bg: "rgba(74, 222, 128, 0.15)",  color: "#4ade80" },
+        Average:   { bg: "rgba(250, 204, 21, 0.15)",  color: "#facc15" },
+        Fair:      { bg: "rgba(251, 146, 60, 0.15)",  color: "#fb923c" },
+        Poor:      { bg: "rgba(248, 113, 113, 0.15)", color: "#f87171" },
+    };
+    return map[grade] || map.Poor;
+}
+
+const GRADE_META = {
+    Excellent: { risk: "Low",      loan: "High Eligibility",     loanNote: "Strong land suitability across all measured factors." },
+    Good:      { risk: "Low",      loan: "High Eligibility",     loanNote: "Suitable for multiple crops with proper planning." },
+    Average:   { risk: "Moderate", loan: "Moderate Eligibility", loanNote: "Consider soil/irrigation support before financing." },
+    Fair:      { risk: "Moderate", loan: "Limited Eligibility",  loanNote: "Higher risk profile — field verification recommended." },
+    Poor:      { risk: "High",     loan: "Low Eligibility",      loanNote: "Field verification strongly recommended before financing." },
+};
+
+function updateRing(score) {
+    const pct = Math.max(0, Math.min(1, score / 900));
+    const circumference = 339.3;
+    const offset = circumference * (1 - pct);
+
+    const arc = document.getElementById("ring-arc");
+    arc.style.transition = "stroke-dashoffset 1s ease";
+    arc.setAttribute("stroke-dashoffset", offset);
+
+    const hue = Math.round(pct * 120);
+    arc.setAttribute("stroke", `hsl(${hue}, 70%, 50%)`);
+}
+
+/* ===================================================================
+   Satellite Metadata + Historical NDVI Trend
+   =================================================================== */
+
+function renderSatelliteMeta(meta) {
+    const card = document.getElementById("sat-status-card");
+    if (!card) return;
+
+    if (!meta || !meta.scene_count) {
+        card.style.display = "none";
+        return;
+    }
+
+    document.getElementById("sat-status-scenes").textContent = `${meta.scene_count} scenes`;
+    document.getElementById("sat-status-cloud").textContent =
+        meta.mean_cloud_cover != null ? `${meta.mean_cloud_cover}% avg cloud` : "—";
+
+    if (meta.latest_scene_date) {
+        const days = Math.floor((Date.now() - new Date(meta.latest_scene_date)) / 86400000);
+        document.getElementById("sat-status-freshness").textContent =
+            `Latest scene: ${meta.latest_scene_date} (${days}d ago)`;
+    } else {
+        document.getElementById("sat-status-freshness").textContent = "—";
+    }
+
+    card.style.display = "block";
+}
+
+function renderTrendChart(trend) {
+    const wrap = document.getElementById("trend-chart-wrap");
+    if (!wrap) return;
+
+    const points = (trend || []).filter(p => p.ndvi != null);
+    if (points.length < 2) {
+        wrap.innerHTML = `<p class="trend-empty">Not enough seasons with clear-sky imagery to plot a trend.</p>`;
+        return;
+    }
+
+    const w = 100, h = 100, pad = 8;
+    const values = points.map(p => p.ndvi);
+    const min = Math.min(...values), max = Math.max(...values);
+    const range = max - min || 0.01;
+
+    const coords = points.map((p, i) => {
+        const x = pad + (i / (points.length - 1)) * (w - pad * 2);
+        const y = h - pad - ((p.ndvi - min) / range) * (h - pad * 2);
+        return [x, y];
+    });
+
+    const pathD = coords.map((c, i) => `${i === 0 ? "M" : "L"}${c[0].toFixed(1)},${c[1].toFixed(1)}`).join(" ");
+    const dots = coords.map((c) =>
+        `<circle cx="${c[0].toFixed(1)}" cy="${c[1].toFixed(1)}" r="2.4" fill="#34d399" />`
+    ).join("");
+
+    wrap.innerHTML = `
+        <svg viewBox="0 0 ${w} ${h}" class="trend-svg" preserveAspectRatio="none">
+            <path d="${pathD}" fill="none" stroke="#34d399" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            ${dots}
+        </svg>
+        <div class="trend-labels">
+            ${points.map(p => `<span>${p.year}</span>`).join("")}
+        </div>`;
+}
+
+/* ===================================================================
+   Render Result
+   =================================================================== */
+
+const PARAM_ORDER = [
+    "ndvi", "evi", "savi", "msavi", "ndre", "ndmi", "ndwi", "ci_green", "ci_rededge",
+    "vv", "vh", "vh_vv", "rvi",
+    "rainfall", "air_temp", "solar_radiation", "spi", "spei", "gdd", "lst",
+];
+
+const PARAM_LABELS = {
+    ndvi: "NDVI (Vegetation)", evi: "EVI", savi: "SAVI", msavi: "MSAVI",
+    ndre: "NDRE (Nitrogen)", ndmi: "NDMI (Moisture)", ndwi: "NDWI (Water)",
+    ci_green: "Chlorophyll (Green)", ci_rededge: "Chlorophyll (Red Edge)",
+    vv: "Radar VV", vh: "Radar VH", vh_vv: "Radar VH/VV", rvi: "Radar Veg. Index",
+    rainfall: "Rainfall", air_temp: "Air Temperature", solar_radiation: "Solar Radiation",
+    spi: "SPI (Rainfall Anomaly)", spei: "SPEI (Water Balance)", gdd: "Growing Degree Days",
+    lst: "Land Surface Temp.",
+};
+
+// What each of the 20 FarmScore parameters actually means — shown as a
+// hover tooltip (ⓘ) on every parameter card so a value is never just a
+// number with no context. Mirrors Backend/glossary.py's explanations.
+const PARAM_MEANINGS = {
+    ndvi: "Vegetation greenness/health from satellite bands. Higher = healthier, denser plant growth.",
+    evi: "Like NDVI but corrected for haze and soil background, so it stays accurate in dense canopy. Higher = healthier vegetation.",
+    savi: "A vegetation index that reduces the influence of visible soil in the background — useful for young/sparse crops. Higher = healthier vegetation.",
+    msavi: "A self-adjusting version of SAVI for soil brightness. Higher = healthier vegetation.",
+    ndre: "Red-edge based index, more sensitive to canopy nitrogen/chlorophyll than NDVI. Higher = better nitrogen status.",
+    ndmi: "Moisture content in plant canopy. Higher = more water in the crop/vegetation.",
+    ndwi: "Detects surface water presence (ponds, flooding, waterlogging).",
+    ci_green: "Leaf chlorophyll content estimated from the green band. Higher = more chlorophyll.",
+    ci_rededge: "Leaf chlorophyll content from the red-edge band — more sensitive at higher biomass. Higher = more chlorophyll.",
+    vv: "Sentinel-1 radar signal strength (dB) reflected from the field. Sensitive to canopy structure/moisture; works through clouds.",
+    vh: "Cross-polarized radar signal (dB), especially sensitive to crop volume/biomass. Works through clouds.",
+    vh_vv: "Ratio of VH to VV radar signals — separates vegetation structure from soil/surface effects.",
+    rvi: "Vegetation-density index computed purely from radar (VV/VH) — usable even under cloud cover.",
+    rainfall: "Mean daily rainfall (mm/day) for the growing season. Too little stresses the crop; too much risks waterlogging.",
+    air_temp: "Ambient air temperature — currently sourced from the same MODIS LST signal as Land Surface Temp, shown for reference (not separately weighted, to avoid double-counting).",
+    solar_radiation: "Average daily incoming solar energy (MJ/m²/day) — a key driver of photosynthesis and growth rate.",
+    spi: "Compares current rainfall to the historical average for this location — flags drought or unusually wet conditions.",
+    spei: "Like SPI, but also accounts for temperature-driven water loss — catches heat-driven moisture stress.",
+    gdd: "Accumulated heat units this season — gauges whether crop development is on track, behind, or heat-stressed.",
+    lst: "Temperature of the land surface itself (not air), measured from thermal satellite bands.",
+};
+
+const PARAM_ICONS = {
+    ndvi: "🌿", evi: "🌳", savi: "🌾", msavi: "🌾", ndre: "🍃", ndmi: "🌱", ndwi: "💧",
+    ci_green: "🟢", ci_rededge: "🔴",
+    vv: "📡", vh: "📡", vh_vv: "📡", rvi: "📡",
+    rainfall: "🌧️", air_temp: "🌡️", solar_radiation: "☀️",
+    spi: "🌧️", spei: "🌍", gdd: "🌱", lst: "🌡️",
+};
+
+const PARAM_COLORS = [
+    "#34d399", "#22c55e", "#84cc16", "#a3e635", "#65a30d", "#4ade80", "#38bdf8",
+    "#16a34a", "#15803d",
+    "#a78bfa", "#8b5cf6", "#7c3aed", "#6d28d9",
+    "#60a5fa", "#f59e0b", "#fbbf24", "#0ea5e9", "#06b6d4", "#84cc16", "#f97316",
+];
+
+function statusLabel(pct) {
+    if (pct >= 80) return "Excellent";
+    if (pct >= 60) return "Good";
+    if (pct >= 40) return "Moderate";
+    if (pct >= 20) return "Low";
+    return "Poor";
+}
+
+function ndviTintColor(pct) {
+    // 0 = poor (red/amber), 100 = healthy (green) — reflects the ACTUAL
+    // computed NDVI sub-score, not a decorative fake heatmap.
+    const hue = Math.max(0, Math.min(120, pct * 1.2));
+    return `hsl(${hue}, 65%, 45%)`;
+}
+
+function renderResult(data) {
+    const {
+        score,
+        grade,
+        components,
+        coordinates,
+        recommended_crops,
+        satellite_meta,
+        ndvi_trend,
+    } = data;
+
+    // ---- Score ring ----
+    document.getElementById("final-score").textContent = score;
+    updateRing(score);
+
+    // ---- Grade badge ----
+    const gs = gradeStyle(grade);
+    const gradeEl = document.getElementById("score-grade");
+    gradeEl.textContent = grade;
+    gradeEl.style.background = gs.bg;
+    gradeEl.style.color = gs.color;
+
+    // ---- Coordinates display ----
+    document.getElementById("coord-display").textContent = formatCoords(coordinates.lat, coordinates.lng);
+
+    // ---- Score Breakdown (real components) ----
+    const grid = document.getElementById("params-grid");
+    grid.innerHTML = PARAM_ORDER.map((key, i) => {
+        const c = components[key];
+        if (!c) return "";
+        const pct = Math.max(0, Math.min(100, c.sub_score));
+        const rawDisplay = typeof c.raw_value === "number" ? c.raw_value.toFixed(2) : c.raw_value;
+        const unit = c.unit ? ` ${c.unit}` : "";
+        const reasonAttr = c.unavailable_reason ? ` title="${String(c.unavailable_reason).replace(/"/g, "&quot;")}"` : "";
+        const availability = c.data_available ? "" : `<span class="p-nodata"${reasonAttr}>⚠ no data</span>`;
+
+        let extraTitle = PARAM_MEANINGS[key] || "";
+        if (key === "rainfall" && data.rainfall_monthly && data.rainfall_monthly.length) {
+            extraTitle += " Monthly breakdown: " + data.rainfall_monthly
+                .map(m => `${m.month} ${m.mm_per_day != null ? m.mm_per_day.toFixed(1) : "—"} mm/day`)
+                .join(", ");
+        }
+        const hasExtra = extraTitle ? ' <span class="sr-info" title="' + extraTitle.replace(/"/g, "&quot;") + '">ⓘ</span>' : "";
+
+        return `
+            <div class="score-row" data-param="${key}">
+                <div class="sr-icon" style="background:${PARAM_COLORS[i]}22;color:${PARAM_COLORS[i]}">${PARAM_ICONS[key] || "📊"}</div>
+                <div class="sr-body">
+                    <div class="sr-top">
+                        <span class="sr-label">${PARAM_LABELS[key] || key}${hasExtra}</span>
+                        <span class="sr-status" style="color:${PARAM_COLORS[i]}">${statusLabel(pct)}</span>
+                    </div>
+                    <div class="mini-bar"><div class="mini-bar-fill" style="width:${pct}%;background:${PARAM_COLORS[i]}"></div></div>
+                    <div class="sr-meta">${rawDisplay}${unit} · weight ${c.weight}% · ${c.source}${availability}</div>
+                </div>
+            </div>`;
+    }).join("");
+
+    // ---- NDVI Heatmap — real per-pixel vegetation image draped over the
+    // farm boundary, not a flat tint. Falls back to a flat tint if the
+    // heatmap image fails to generate (slow network, no imagery, etc). ----
+    if (components.ndvi) {
+        const col = ndviTintColor(components.ndvi.sub_score);
+        drawnItems.eachLayer(function (layer) {
+            if (layer.setStyle) layer.setStyle({ fillColor: col, fillOpacity: 0.15, color: col });
+        });
+        const legend = document.getElementById("ndvi-legend");
+        if (legend) legend.style.display = "flex";
+
+        if (window.__ndviHeatmapLayer) {
+            map.removeLayer(window.__ndviHeatmapLayer);
+            window.__ndviHeatmapLayer = null;
+        }
+        fetch(`${API_BASE_URL}/ndvi-heatmap`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ lat: coordinates.lat, lng: coordinates.lng, polygon: farmPolygon }),
+        })
+            .then(res => res.ok ? res.json() : null)
+            .then(heatmap => {
+                if (!heatmap || !heatmap.url || !heatmap.bounds) return;
+                window.__ndviHeatmapLayer = L.imageOverlay(heatmap.url, heatmap.bounds, { opacity: 0.75 }).addTo(map);
+            })
+            .catch(err => console.warn("NDVI heatmap overlay failed (non-fatal):", err));
+    }
+
+    // ---- Top crop (folded into Land Summary — no separate crop card in this layout) ----
+    let topCrop = "—";
+    if (recommended_crops && recommended_crops.primary) {
+        topCrop = `${recommended_crops.primary.crop} (${recommended_crops.primary.score}%)`;
+    }
+
+    // ---- Land Summary ----
+    const meta = GRADE_META[grade] || GRADE_META.Poor;
+    document.getElementById("ls-score").textContent = `${score}/900`;
+    document.getElementById("ls-risk").textContent = meta.risk;
+    document.getElementById("ls-crop").textContent = topCrop;
+    document.getElementById("ls-area").textContent = document.getElementById("farm-area").value || "Not drawn";
+    document.getElementById("ls-date").textContent = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+
+    const climateEl = document.getElementById("ls-climate");
+    if (climateEl && data.climate_risk) {
+        const cr = data.climate_risk;
+        climateEl.textContent = cr.flags.length ? `${cr.level} (${cr.flags[0]})` : cr.level;
+        climateEl.title = cr.flags.join("; ");
+    }
+
+    const ndwiEl = document.getElementById("ls-ndwi");
+    if (ndwiEl) {
+        ndwiEl.textContent = data.ndwi != null ? data.ndwi.toFixed(3) : "—";
+    }
+
+    // ---- Loan Eligibility (qualitative only — no fabricated ₹ figures) ----
+    const loanBadge = document.getElementById("loan-status");
+    loanBadge.textContent = meta.loan;
+    loanBadge.style.background = gs.bg;
+    loanBadge.style.color = gs.color;
+    document.getElementById("loan-desc").textContent = meta.loanNote;
+
+    // ---- AI Insight (Gemini, grounded in the real data above — hidden
+    // entirely if unavailable, never replaced with placeholder text) ----
+    const aiCard = document.getElementById("ai-insight-card");
+    if (data.ai_insight) {
+        document.getElementById("ai-insight-text").textContent = data.ai_insight;
+        aiCard.style.display = "block";
+    } else {
+        aiCard.style.display = "none";
+    }
+
+    // ---- AI Farm Advisor + AI Risk Analysis (on-demand, not auto-run,
+    // to avoid an extra Gemini call on every single calculation) ----
+    document.getElementById("ai-advisor-card").style.display = "block";
+    document.getElementById("ai-advisor-text").textContent = "Not generated yet.";
+    document.getElementById("ai-risk-card").style.display = "block";
+    document.getElementById("ai-risk-text").textContent = "Not generated yet.";
+
+    // ---- BCIS Credit Intelligence (Phase 6, on-demand) ----
+    document.getElementById("bcis-card").style.display = "block";
+    document.getElementById("bcis-content").innerHTML = `<p class="empty-hint">Not computed yet — needs a farm boundary (for total yield) for the loan ceiling.</p>`;
+
+    // ---- Satellite metadata + historical trend (real Earth Engine data) ----
+    renderSatelliteMeta(satellite_meta);
+    renderTrendChart(ndvi_trend);
+
+    // Keep the full result around so the chatbot can ground its answers
+    // about "this farm" in the same real numbers shown on screen, and so
+    // the Extended Report / PDF export pages can reuse it without
+    // recomputing anything.
+    lastFarmContext = data;
+    try {
+        sessionStorage.setItem("farmscore_last_result", JSON.stringify({ ...data, polygon: farmPolygon || null }));
+    } catch (err) {
+        console.warn("Could not cache result for report/PDF pages:", err);
+    }
+    const downloadBtn = document.getElementById("download-pdf-btn");
+    if (downloadBtn) downloadBtn.disabled = false;
+}
+
+/* ===================================================================
+   BCIS Credit Intelligence — on-demand (Phase 6)
+   =================================================================== */
+(function setupBcis() {
+    const btn = document.getElementById("compute-bcis-btn");
+    if (!btn) return;
+
+    const tierColors = { GREEN: "#2f9e63", AMBER: "#e8912d", RED: "#d64545" };
+
+    btn.addEventListener("click", async () => {
+        if (!lastFarmContext) return;
+        const content = document.getElementById("bcis-content");
+        btn.disabled = true;
+        content.innerHTML = `<p class="empty-hint">Computing… (includes a flood-risk check, can take 15-20s)</p>`;
+
+        try {
+            const res = await bhumiAuthFetch(`${API_BASE_URL}/credit-intelligence`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ...lastFarmContext, polygon: farmPolygon }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || "Failed");
+
+            const bcis = data.bcis;
+            const income = data.income_estimate;
+            const ceiling = data.loan_ceiling;
+            const color = tierColors[bcis.tier] || "#888";
+
+            let html = `
+                <div class="enrichment-row">
+                    <span class="er-icon">💳</span>
+                    <span class="er-label">BCIS Risk Score</span>
+                    <span class="er-value" style="color:${color};font-weight:700;">${bcis.score}/100 — ${bcis.tier}</span>
+                </div>`;
+
+            if (income.available) {
+                html += `
+                    <div class="enrichment-row">
+                        <span class="er-icon">💰</span>
+                        <span class="er-label">Est. Income (${income.crop})</span>
+                        <span class="er-value">₹${income.income_estimate_rs.toLocaleString("en-IN")}</span>
+                    </div>`;
+            } else {
+                html += `<p class="empty-hint">${income.reason}</p>`;
+            }
+
+            if (ceiling.loan_ceiling_rs != null) {
+                html += `
+                    <div class="enrichment-row">
+                        <span class="er-icon">🏦</span>
+                        <span class="er-label">Loan Ceiling</span>
+                        <span class="er-value" style="font-weight:700;">₹${ceiling.loan_ceiling_rs.toLocaleString("en-IN")}</span>
+                    </div>`;
+            }
+
+            if (data.auto_freeze.frozen) {
+                html += `<p style="color:#d64545;font-weight:700;font-size:0.76rem;margin-top:6px;">🚫 AUTO-FROZEN: ${data.auto_freeze.reason}</p>`;
+            }
+
+            html += `<p class="empty-hint" style="margin-top:8px;">Drivers: ${bcis.drivers.join("; ")}</p>`;
+            html += `<p class="empty-hint">${bcis.method}</p>`;
+
+            content.innerHTML = html;
+        } catch (err) {
+            content.innerHTML = `<p class="empty-hint">Could not compute BCIS. Please try again.</p>`;
+        } finally {
+            btn.disabled = false;
+        }
+    });
+})();
+(function setupAiAdvisorAndRisk() {
+    const advisorBtn = document.getElementById("get-advisor-btn");
+    const riskBtn = document.getElementById("get-risk-btn");
+    if (!advisorBtn || !riskBtn) return;
+
+    advisorBtn.addEventListener("click", async () => {
+        if (!lastFarmContext) return;
+        const textEl = document.getElementById("ai-advisor-text");
+        advisorBtn.disabled = true;
+        textEl.textContent = "Thinking…";
+        try {
+            const res = await fetch(`${API_BASE_URL}/farm-advisor`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(lastFarmContext),
+            });
+            const data = await res.json();
+            textEl.textContent = data.advisory || data.reason || "No advisory available.";
+        } catch (err) {
+            textEl.textContent = "Could not generate advisory. Please try again.";
+        } finally {
+            advisorBtn.disabled = false;
+        }
+    });
+
+    riskBtn.addEventListener("click", async () => {
+        if (!lastFarmContext) return;
+        const textEl = document.getElementById("ai-risk-text");
+        riskBtn.disabled = true;
+        textEl.textContent = "Analyzing…";
+        try {
+            const res = await fetch(`${API_BASE_URL}/risk-analysis`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    climate_risk: lastFarmContext.climate_risk,
+                    score: lastFarmContext.score,
+                    grade: lastFarmContext.grade,
+                    enrichment: lastFarmContext.enrichment,
+                }),
+            });
+            const data = await res.json();
+            textEl.textContent = data.analysis || data.reason || "No risk analysis available.";
+        } catch (err) {
+            textEl.textContent = "Could not generate risk analysis. Please try again.";
+        } finally {
+            riskBtn.disabled = false;
+        }
+    });
+})();
+(function setupPdfDownload() {
+    const btn = document.getElementById("download-pdf-btn");
+    if (!btn) return;
+
+    btn.addEventListener("click", async function () {
+        if (!lastFarmContext) return;
+        const original = btn.textContent;
+        btn.textContent = "Generating…";
+        btn.disabled = true;
+
+        try {
+            const res = await fetch(`${API_BASE_URL}/report/pdf`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(lastFarmContext),
+            });
+            if (!res.ok) throw new Error("Report generation failed");
+
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "BhumiAI_Report.pdf";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            console.error("PDF download error:", err);
+            const errBox = document.getElementById("error-box");
+            if (errBox) {
+                errBox.textContent = "Could not generate PDF report. Please try again.";
+                errBox.style.display = "block";
+            }
+        } finally {
+            btn.textContent = original;
+            btn.disabled = false;
+        }
+    });
+})();
+
+/* ===================================================================
+   Compute Score — single entry point called on button click
+   =================================================================== */
+
+async function computeScore() {
+    const lat = parseFloat(document.getElementById("lat-input").value);
+    const lng = parseFloat(document.getElementById("lng-input").value);
+
+    const errBox = document.getElementById("error-box");
+    errBox.style.display = "none";
+
+    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        errBox.textContent = "Please search, use current location, or click on the map first.";
+        errBox.style.display = "block";
+        return;
+    }
+
+    placeMarker(lat, lng);
+    map.panTo([lat, lng]);
+
+    const btn = document.getElementById("calc-btn");
+    const btnText = document.getElementById("btn-text");
+    btn.classList.add("loading");
+    btnText.textContent = "Fetching satellite data…";
+
+    try {
+        btnText.textContent = "Querying Earth Engine…";
+        const result = await calculateFarmScore(lat, lng);
+        renderResult(result);
+    } catch (err) {
+        errBox.textContent = err.message || "An unexpected error occurred.";
+        errBox.style.display = "block";
+    } finally {
+        btn.classList.remove("loading");
+        btnText.textContent = "Calculate Bhumi AI Score";
+    }
+}
+
+document.getElementById("calc-btn").addEventListener("click", computeScore);
+
+/* ===================================================================
+   Map toolbar tabs — each does something real, not decorative
+   =================================================================== */
+
+const TAB_TO_PARAM = { ndmi: "ndmi", rainfall: "rainfall", groundwater: "groundwater" };
+
+document.querySelectorAll(".map-tab").forEach(tab => {
+    tab.addEventListener("click", function () {
+        document.querySelectorAll(".map-tab").forEach(t => t.classList.remove("active"));
+        tab.classList.add("active");
+
+        const key = tab.dataset.tab;
+
+        if (key === "spectral") {
+            openSpectralPanel();
+            return;
+        }
+
+        if (key === "ndvi") {
+            const legend = document.getElementById("ndvi-legend");
+            if (legend) legend.style.display = legend.style.display === "flex" ? "none" : "flex";
+            return;
+        }
+
+        if (key === "layers") {
+            if (map.hasLayer(satelliteLayer)) {
+                map.removeLayer(satelliteLayer);
+                streetLayer.addTo(map);
+            } else {
+                map.removeLayer(streetLayer);
+                satelliteLayer.addTo(map);
+            }
+            return;
+        }
+
+        const paramKey = TAB_TO_PARAM[key];
+        if (paramKey) {
+            const row = document.querySelector(`.score-row[data-param="${paramKey}"]`);
+            if (row) {
+                row.scrollIntoView({ behavior: "smooth", block: "center" });
+                row.classList.add("flash");
+                setTimeout(() => row.classList.remove("flash"), 900);
+            }
+        }
+    });
+});
+
+/* ===================================================================
+   Floating Chatbot — answers general questions from Gemini's own
+   knowledge, and questions about the currently-calculated farm using
+   the exact real numbers shown on screen (never invented client-side).
+   =================================================================== */
+
+let lastFarmContext = null;
+let chatHistory = [];
+
+const chatPanel = document.getElementById("chat-panel");
+const chatMessages = document.getElementById("chat-messages");
+const chatInput = document.getElementById("chat-input");
+
+document.getElementById("chat-toggle-btn").addEventListener("click", () => {
+    chatPanel.classList.toggle("open");
+    if (chatPanel.classList.contains("open")) chatInput.focus();
+});
+
+document.getElementById("chat-close-btn").addEventListener("click", () => {
+    chatPanel.classList.remove("open");
+});
+
+function appendChatMessage(text, who) {
+    const el = document.createElement("div");
+    el.className = `chat-msg chat-msg-${who}`;
+    el.textContent = text;
+    chatMessages.appendChild(el);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return el;
+}
+
+async function sendChatMessage() {
+    const message = chatInput.value.trim();
+    if (!message) return;
+
+    chatInput.value = "";
+    appendChatMessage(message, "user");
+    chatHistory.push({ role: "user", text: message });
+
+    const typingEl = appendChatMessage("…", "bot");
+
+    try {
+        const res = await fetch(`${API_BASE_URL}/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                message,
+                history: chatHistory.slice(0, -1),
+                farm_context: lastFarmContext,
+            }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.error || "Assistant unavailable");
+
+        typingEl.textContent = data.reply;
+        chatHistory.push({ role: "assistant", text: data.reply });
+    } catch (err) {
+        typingEl.textContent = "Sorry, I couldn't reach the assistant. " + (err.message || "");
+        typingEl.classList.add("chat-msg-error");
+    }
+}
+
+document.getElementById("chat-send-btn").addEventListener("click", sendChatMessage);
+chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") sendChatMessage();
+});
+
+/* ===================================================================
+   Crop Disease Diagnosis — real Gemini vision, uploaded photo only.
+   Always shows confidence + caveat exactly as returned by the backend;
+   never invents extra certainty client-side.
+   =================================================================== */
+
+const diagnoseOverlay = document.getElementById("diagnose-overlay");
+const diagnoseFileInput = document.getElementById("diagnose-file-input");
+const diagnosePreview = document.getElementById("diagnose-preview");
+const uploadDropText = document.getElementById("upload-drop-text");
+const diagnoseSubmitBtn = document.getElementById("diagnose-submit-btn");
+const diagnoseResult = document.getElementById("diagnose-result");
+
+document.getElementById("nav-diagnose-btn").addEventListener("click", () => {
+    diagnoseOverlay.classList.add("open");
+});
+
+document.getElementById("diagnose-close-btn").addEventListener("click", () => {
+    diagnoseOverlay.classList.remove("open");
+});
+
+diagnoseOverlay.addEventListener("click", (e) => {
+    if (e.target === diagnoseOverlay) diagnoseOverlay.classList.remove("open");
+});
+
+let selectedImageFile = null;
+
+diagnoseFileInput.addEventListener("change", () => {
+    const file = diagnoseFileInput.files[0];
+    if (!file) return;
+
+    if (file.size > 6 * 1024 * 1024) {
+        alert("Image too large — please use a photo under 6MB.");
+        diagnoseFileInput.value = "";
+        return;
+    }
+
+    selectedImageFile = file;
+    diagnoseSubmitBtn.disabled = false;
+    diagnoseResult.style.display = "none";
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        diagnosePreview.src = e.target.result;
+        diagnosePreview.style.display = "block";
+        uploadDropText.style.display = "none";
+    };
+    reader.readAsDataURL(file);
+});
+
+function confidenceColor(level) {
+    if (level === "High") return "var(--primary)";
+    if (level === "Medium") return "var(--signal, var(--accent-amber))";
+    return "var(--danger)";
+}
+
+async function submitDiagnosis() {
+    if (!selectedImageFile) return;
+
+    diagnoseSubmitBtn.disabled = true;
+    diagnoseSubmitBtn.textContent = "Analyzing…";
+    diagnoseResult.style.display = "none";
+
+    const formData = new FormData();
+    formData.append("image", selectedImageFile);
+
+    try {
+        const res = await fetch(`${API_BASE_URL}/diagnose`, { method: "POST", body: formData });
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.error || "Diagnosis failed");
+
+        if (data.is_plant === false) {
+            diagnoseResult.innerHTML = `
+                <p class="diag-not-plant">This doesn't look like a plant/crop photo. ${data.diagnosis || ""}</p>`;
+        } else {
+            const symptoms = (data.symptoms_observed || []).map(s => `<li>${s}</li>`).join("");
+            const remedies = (data.remedy_steps || []).map(s => `<li>${s}</li>`).join("");
+
+            diagnoseResult.innerHTML = `
+                <div class="diag-row">
+                    <span class="diag-label">Crop (guess)</span>
+                    <span>${data.crop_guess || "Unclear"}</span>
+                </div>
+                <div class="diag-row">
+                    <span class="diag-label">Diagnosis</span>
+                    <span class="diag-diagnosis">${data.diagnosis || "Unclear from photo"}</span>
+                </div>
+                <div class="diag-row">
+                    <span class="diag-label">Confidence</span>
+                    <span style="color:${confidenceColor(data.confidence)}">${data.confidence || "Low"}</span>
+                </div>
+                ${symptoms ? `<div class="diag-section"><strong>Symptoms observed</strong><ul>${symptoms}</ul></div>` : ""}
+                ${remedies ? `<div class="diag-section"><strong>Suggested next steps</strong><ul>${remedies}</ul></div>` : ""}
+                <p class="diag-caveat">⚠ ${data.caveat || "This is an AI estimate, not a substitute for expert advice."}</p>`;
+        }
+
+        diagnoseResult.style.display = "block";
+    } catch (err) {
+        diagnoseResult.innerHTML = `<p class="diag-not-plant">Couldn't diagnose the photo: ${err.message}</p>`;
+        diagnoseResult.style.display = "block";
+    } finally {
+        diagnoseSubmitBtn.disabled = false;
+        diagnoseSubmitBtn.textContent = "Diagnose Photo";
+    }
+}
+
+diagnoseSubmitBtn.addEventListener("click", submitDiagnosis);
+
+/* ===================================================================
+   Spectral Intelligence — "hyperspectral-style" crop health engine.
+   Calls the backend /spectral endpoint (real Sentinel-2 multispectral
+   proxy indices: NDVI/NDRE/GNDVI/NDMI/MSI), renders a 0-100 score ring,
+   per-index breakdown, flags, and AI (or rule-based fallback)
+   recommendations. Never fabricates numbers client-side.
+   =================================================================== */
+
+const spectralOverlay = document.getElementById("spectral-overlay");
+const spectralLoading = document.getElementById("spectral-loading");
+const spectralContent = document.getElementById("spectral-content");
+const spectralErrorBox = document.getElementById("spectral-error");
+
+const SPECTRAL_INDEX_ORDER = ["chlorophyll", "nitrogen", "moisture_stress", "stress_risk"];
+const SPECTRAL_COLORS = { chlorophyll: "#34d399", nitrogen: "#a3e635", moisture_stress: "#38bdf8", stress_risk: "#f59e0b" };
+const SPECTRAL_ICONS = { chlorophyll: "🌿", nitrogen: "🧪", moisture_stress: "💧", stress_risk: "⚠️" };
+
+function closeSpectralPanel() {
+    spectralOverlay.classList.remove("open");
+}
+
+document.getElementById("spectral-close-btn").addEventListener("click", closeSpectralPanel);
+spectralOverlay.addEventListener("click", (e) => {
+    if (e.target === spectralOverlay) closeSpectralPanel();
+});
+
+function updateSpectralRing(score) {
+    const pct = Math.max(0, Math.min(1, score / 100));
+    const circumference = 339.3;
+    const offset = circumference * (1 - pct);
+    const arc = document.getElementById("spectral-ring-arc");
+    arc.style.transition = "stroke-dashoffset 1s ease";
+    arc.setAttribute("stroke-dashoffset", offset);
+    const hue = Math.round(pct * 200); // blue(200)->green as it improves
+    arc.setAttribute("stroke", `hsl(${hue}, 70%, 55%)`);
+}
+
+function renderSpectralResult(data) {
+    document.getElementById("spectral-final-score").textContent = data.spectral_score;
+    updateSpectralRing(data.spectral_score);
+
+    const gs = gradeStyle(data.grade === "Moderate" ? "Average" : data.grade);
+    const gradeEl = document.getElementById("spectral-grade");
+    gradeEl.textContent = data.grade;
+    gradeEl.style.background = gs.bg;
+    gradeEl.style.color = gs.color;
+
+    const flagsWrap = document.getElementById("spectral-flags");
+    flagsWrap.innerHTML = (data.flags || []).map(f => `<div class="spectral-flag">⚠ ${f}</div>`).join("");
+
+    const grid = document.getElementById("spectral-params-grid");
+    grid.innerHTML = SPECTRAL_INDEX_ORDER.map(key => {
+        const c = data.indices[key];
+        if (!c) return "";
+        const pct = Math.max(0, Math.min(100, c.sub_score));
+        const color = SPECTRAL_COLORS[key];
+        const availability = c.data_available ? "" : `<span class="p-nodata">⚠ no data</span>`;
+        return `
+            <div class="score-row">
+                <div class="sr-icon" style="background:${color}22;color:${color}">${SPECTRAL_ICONS[key]}</div>
+                <div class="sr-body">
+                    <div class="sr-top">
+                        <span class="sr-label">${c.label}</span>
+                        <span class="sr-status" style="color:${color}">${c.status}</span>
+                    </div>
+                    <div class="mini-bar"><div class="mini-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+                    <div class="sr-meta">${c.index} ${c.raw_value} · weight ${c.weight}% · ${c.source}${availability}</div>
+                </div>
+            </div>`;
+    }).join("");
+
+    const rec = data.recommendations || {};
+    const recWrap = document.getElementById("spectral-recommendations");
+    recWrap.innerHTML = `
+        <div class="spectral-rec-row"><span class="spectral-rec-label">💧 Irrigation</span><p>${rec.irrigation_advice || "—"}</p></div>
+        <div class="spectral-rec-row"><span class="spectral-rec-label">🧪 Fertilization</span><p>${rec.fertilization_advice || "—"}</p></div>
+        <div class="spectral-rec-row"><span class="spectral-rec-label">🌾 Crop Management</span><p>${rec.crop_management_advice || "—"}</p></div>`;
+}
+
+async function fetchSpectralIntelligence(lat, lng) {
+    const res = await fetch(`${API_BASE_URL}/spectral`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lat, lng, polygon: farmPolygon }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || data.detail || `Server error ${res.status}`);
+    return data;
+}
+
+async function openSpectralPanel() {
+    const lat = parseFloat(document.getElementById("lat-input").value);
+    const lng = parseFloat(document.getElementById("lng-input").value);
+
+    if (isNaN(lat) || isNaN(lng)) {
+        const errBox = document.getElementById("error-box");
+        errBox.textContent = "Select a location on the map first, then open Spectral Intelligence.";
+        errBox.style.display = "block";
+        return;
+    }
+
+    spectralOverlay.classList.add("open");
+    spectralContent.style.display = "none";
+    spectralErrorBox.style.display = "none";
+    spectralLoading.style.display = "flex";
+
+    try {
+        const data = await fetchSpectralIntelligence(lat, lng);
+        renderSpectralResult(data);
+        spectralContent.style.display = "block";
+    } catch (err) {
+        spectralErrorBox.textContent = "Couldn't compute spectral intelligence: " + (err.message || "unknown error");
+        spectralErrorBox.style.display = "block";
+    } finally {
+        spectralLoading.style.display = "none";
+    }
+}

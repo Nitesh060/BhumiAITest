@@ -406,6 +406,67 @@ def _fetch_deep_soil_trend(lat: float, lng: float, polygon: Optional[dict]) -> l
     return out
 
 
+def fetch_farm_location_thumbnail(lat: float, lng: float, polygon: Optional[dict] = None, dimensions: int = 640) -> Dict[str, Any]:
+    """A true-colour Sentinel-2 thumbnail of the farm and its immediate
+    surroundings, with the farm boundary (the drawn polygon, or a small
+    box around the point if none was drawn) painted in red — the
+    "satellite image with the farm boundary marked" view a lending/
+    insurance report needs (see SatSource-style report samples).
+
+    Uses the same ee.Image.getThumbURL() pattern already proven in
+    historical_timeline_service.fetch_before_after_comparison() — this
+    is NOT a new kind of Earth Engine call for this codebase, just a
+    new use of one. Like every other fetch_* function here, this never
+    raises: any failure (no cloud-free scene, thumbnail generation
+    error) comes back as {"available": False, "reason": ...}.
+
+    Painting the outline: `Image.paint()` with a single scalar color
+    on a 3-band RGB image paints every band to that same value (grey),
+    not a specific colour — so the standard approach is a separate
+    1-band line mask, and blending a solid-red image through that mask
+    onto the RGB composite. This has not been exercised against a real
+    Earth Engine backend in this build environment (no network access
+    here) — smoke-test it against one real farm before relying on it.
+    """
+    try:
+        boundary_geom, _ = _region_geometry(lat, lng, polygon)
+        # A wider context window than the farm itself, so neighbouring
+        # fields/roads give the viewer orientation — matches the
+        # zoomed-out satellite-image style these reports use.
+        context_region = boundary_geom.buffer(220)
+
+        coll = (
+            ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+            .filterBounds(context_region)
+            .filterDate(*_date_window())
+            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", S2_MAX_CLOUD_PCT))
+            .sort("CLOUDY_PIXEL_PERCENTAGE")
+        )
+        if _getinfo_with_backoff(coll.size()) == 0:
+            return {"available": False, "reason": "No reasonably cloud-free Sentinel-2 scene found nearby."}
+
+        first = coll.first()
+        rgb = first.select(["B4", "B3", "B2"]).visualize(min=0, max=2200, gamma=1.3)
+
+        boundary_fc = ee.FeatureCollection([ee.Feature(boundary_geom)])
+        outline_mask = ee.Image().byte().paint(boundary_fc, 1, 3)  # 1-band line mask, ~3px wide
+        red_fill = ee.Image.constant([255, 0, 0]).visualize(min=0, max=255)
+        painted = rgb.blend(red_fill.updateMask(outline_mask))
+
+        url = painted.getThumbURL({"region": context_region, "dimensions": dimensions, "format": "png"})
+        scene_date = ee.Date(first.get("system:time_start")).format("YYYY-MM-dd")
+        return {
+            "available": True,
+            "url": url,
+            "scene_date": _getinfo_with_backoff(scene_date),
+            "note": "Closest reasonably cloud-free Sentinel-2 scene in the current data window — not necessarily today's imagery.",
+            "source": "Sentinel-2 true-colour, farm boundary in red",
+        }
+    except Exception as exc:
+        logger.exception("Farm location thumbnail generation failed")
+        return {"available": False, "reason": f"Thumbnail generation failed: {type(exc).__name__}: {exc}"}
+
+
 def fetch_farm_data(lat: float, lng: float, polygon: Optional[dict] = None) -> Dict[str, Any]:
     if not (-90 <= lat <= 90):
         raise ValueError(f"Latitude out of range: {lat}")

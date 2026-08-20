@@ -186,7 +186,7 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
             logger.exception("compute_farmscore sub-fetch '%s' failed (non-fatal)", name)
             return name, {"available": False, "reason": f"{name} fetch raised {type(exc).__name__}: {exc}"}
 
-    with _TPE_SCORE(max_workers=2) as score_pool:
+    with _TPE_SCORE(max_workers=3) as score_pool:
         score_futures = [
             score_pool.submit(_safe_score_fetch, "extended_indices", fetch_extended_indices, lat, lng, polygon),
             score_pool.submit(_safe_score_fetch, "spectral", calculate_spectral_intelligence, lat, lng, polygon),

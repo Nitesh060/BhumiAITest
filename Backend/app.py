@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 
-from earth_engine_service import fetch_farm_data, initialise_earth_engine
+from earth_engine_service import fetch_farm_data, initialise_earth_engine, fetch_farm_location_thumbnail
 from scoring import calculate_score
 from crop_recommendation import recommend_crop
 from gemini_service import generate_insight, generate_chat_reply, diagnose_crop_image, generate_spectral_insight, generate_farm_advisor, generate_risk_analysis
@@ -50,11 +50,13 @@ from historical_timeline_service import fetch_ndvi_historical_timeline, fetch_be
 from enrichment_service import fetch_vegetation_heatmap
 from crop_intelligence_service import (
     identify_crop_heuristic,
+    identify_crop_history,
     detect_growth_stage,
     estimate_sowing_harvest,
     detect_crop_rotation,
     CROP_CALENDAR,
 )
+from seasonal_score_service import compute_seasonal_performance_score
 from enrichment_service import fetch_cropping_intensity as _fetch_cropping_intensity_for_ci
 from enrichment_service import fetch_cropping_history as _fetch_cropping_history_for_ci
 from weather_soil_terrain_service import (
@@ -381,6 +383,32 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
         satellite_data.get("rainfall"), satellite_data.get("air_temperature")
     )
 
+    # ---- Per-season crop identification (Rice/Wheat/Maize/Groundnut guess
+    # for each season in the 3-year cropping_history window) — needs
+    # cropping_history to already be in `enrichment`, so this runs after
+    # the pool above, not inside it. One extra small Earth Engine call
+    # per cropped Kharif season (a flood-signature check), so it's cheap. ----
+    try:
+        enrichment["crop_history_identified"] = identify_crop_history(
+            lat, lng, polygon, cropping_history=enrichment.get("cropping_history")
+        )
+    except Exception:
+        logger.exception("Per-season crop identification failed (non-fatal)")
+        enrichment["crop_history_identified"] = None
+
+    # ---- Bhumi Seasonal Score (Base + Kharif + Rabi composite) — pure
+    # Python over data already fetched above, no extra Earth Engine call.
+    # A distinct, complementary metric from the main FarmScore — see
+    # seasonal_score_service.py's module docstring for why these are
+    # kept separate rather than merged into one number. ----
+    try:
+        enrichment["seasonal_score"] = compute_seasonal_performance_score(
+            enrichment.get("irrigation"), enrichment.get("cropping_intensity"), enrichment.get("cropping_history")
+        )
+    except Exception:
+        logger.exception("Seasonal score computation failed (non-fatal)")
+        enrichment["seasonal_score"] = None
+
     # ---- Yield Prediction (formula-based proxy, see yield_prediction.py) ----
     # Uses the top-recommended crop + this farm's own NDVI. Area comes from
     # the drawn polygon if one exists; without it, only per-hectare yield
@@ -599,12 +627,35 @@ def diagnose():
 def report_pdf():
     """Generates the SatSource-style PDF report from a /calculate response.
     Frontend sends the exact result object it already has (score, components,
-    enrichment, trends, etc.) — this endpoint never recomputes or invents
-    anything, it only lays out what was already calculated.
+    enrichment, trends, etc.) — this endpoint lays out what was already
+    calculated and does not recompute any SCORE or DATA VALUE.
+
+    One deliberate exception: the farm-location satellite thumbnail (a
+    visual aid, not a data value) is generated here, on demand, rather
+    than on every /calculate call — most calculate calls never lead to
+    a PDF download, so doing it here avoids adding Earth Engine load to
+    the dashboard's hot path for the common case. It fails soft: if
+    generation or the coordinates are missing, the PDF still renders
+    fine without the image (see pdf_report.py's _location_page).
     """
     body = request.get_json(silent=True)
     if not body or "score" not in body:
         return jsonify({"error": "Request body must be a /calculate response (must include 'score')"}), 400
+
+    coords = body.get("coordinates") or {}
+    lat, lng = coords.get("lat"), coords.get("lng")
+    if lat is not None and lng is not None and "satellite_thumbnail" not in body:
+        try:
+            body["satellite_thumbnail"] = fetch_farm_location_thumbnail(float(lat), float(lng), body.get("polygon"))
+        except Exception:
+            logger.exception("Farm location thumbnail generation failed (non-fatal for PDF)")
+            body["satellite_thumbnail"] = {"available": False, "reason": "Thumbnail generation failed."}
+    if lat is not None and lng is not None and "rainfall_trend" not in body:
+        try:
+            body["rainfall_trend"] = fetch_historical_weather(float(lat), float(lng), body.get("polygon"), start_year=2016)
+        except Exception:
+            logger.exception("Rainfall trend fetch failed (non-fatal for PDF)")
+            body["rainfall_trend"] = None
 
     try:
         pdf_bytes = generate_pdf_report(body)

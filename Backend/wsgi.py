@@ -2,12 +2,40 @@
 
 from __future__ import annotations
 
+import importlib
 import os
+import sys
 import time
+import traceback
 from collections import defaultdict, deque
 
-import app as app_module
-from app import app
+try:
+    app_module = importlib.import_module("app")
+    app = app_module.app
+except Exception:
+    # Render's deploy log has repeatedly shown only:
+    #   ImportError: cannot import name 'app' from 'app'
+    # which is gunicorn's generic message for "the app module didn't
+    # expose an `app` attribute" — it hides whatever ACTUALLY happened
+    # inside app.py's own execution (a real exception partway through
+    # its imports would normally show its own traceback instead of
+    # this generic one, so something more specific is going on). Print
+    # everything we can here so the next deploy log shows the real
+    # cause instead of this dead end, then re-raise so the process
+    # still fails exactly as before — this changes nothing except what
+    # gets printed.
+    print("=" * 70, file=sys.stderr)
+    print("FATAL: failed to import the Flask `app` object from app.py.", file=sys.stderr)
+    try:
+        print(f"app module resolved to: {sys.modules['app'].__file__}", file=sys.stderr)
+        print(f"attributes found on it: {sorted(n for n in dir(sys.modules['app']) if not n.startswith('_'))}", file=sys.stderr)
+    except Exception:
+        print("(could not introspect the partially-loaded 'app' module)", file=sys.stderr)
+    print("Full traceback:", file=sys.stderr)
+    traceback.print_exc()
+    print("=" * 70, file=sys.stderr)
+    raise
+
 from alphaearth_service import register_alphaearth_routes
 from seasonal_data_service import fetch_seasonal_comprehensive_data
 

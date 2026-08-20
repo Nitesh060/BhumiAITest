@@ -362,26 +362,79 @@ def _seasonal_rainfall_from_monthly(rainfall_monthly: list) -> Tuple[Optional[fl
     """
     valid = [m["mm_per_day"] for m in (rainfall_monthly or []) if m.get("mm_per_day") is not None]
     if not valid:
-        return None, "No individual month in the Jun-Oct window returned a usable CHIRPS value."
+        reasons = [m["reason"] for m in (rainfall_monthly or []) if m.get("reason")]
+        base = "No individual month in the Jun-Oct window returned a usable CHIRPS value."
+        return (None, f"{base} Detail: " + " | ".join(reasons)) if reasons else (None, base)
     return round(sum(valid) / len(valid), 4), None
+
+
+def _rainfall_month_window(year: int, month: int) -> Tuple[str, str]:
+    """Start/end date-string pair for one Jun-Oct month window.
+
+    Was previously inlined as ``... if month < 10 else f"{year + 1}-01-01"``
+    — wrong for October (the last month in the 6-10 loop): since
+    ``10 < 10`` is False, that branch fired for October too, making its
+    "monthly" window actually span Oct 1 through the *following* Jan 1
+    (three months, not one). The correct wrap condition is ``month < 12``
+    (matches ``weather_indices_service._month_windows``, which never had
+    this bug) — only December needs to roll into the next year.
+    """
+    start = f"{year}-{month:02d}-01"
+    end = f"{year}-{month + 1:02d}-01" if month < 12 else f"{year + 1}-01-01"
+    return start, end
+
+
+def _fetch_rainfall_one_month(
+    lat: float, lng: float, polygon: Optional[dict], filter_region, year: int, month: int, label: str
+) -> Dict[str, Any]:
+    """Fetch one month's mean daily CHIRPS rainfall (mm/day), with a
+    reason string attached whenever it comes back unavailable.
+
+    Root cause of the "Rainfall always no-data" production bug: this
+    used to gate on ``c.size().getInfo()`` — a raw, un-retried Earth
+    Engine call — before ever reaching ``_reduce_mean_with_retry``. It
+    was the only ``.getInfo()`` call left in this module that bypassed
+    ``_getinfo_with_backoff`` entirely, so a single transient
+    429/timeout on that one call (and nothing protected it) silently
+    marked the whole month unusable with zero retry — unlike every
+    other CHIRPS/ERA5 monthly fetch in this codebase (solar radiation,
+    GDD, SPEI, SPI's ``_season_rainfall_mm``), none of which ever had
+    this gate. It was also redundant: an empty collection already
+    reduces to ``None`` safely through ``_reduce_mean_with_retry``
+    without a separate size check. Removed outright.
+    """
+    start, end = _rainfall_month_window(year, month)
+    try:
+        c = (ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
+             .filterDate(start, end)
+             .filterBounds(filter_region)
+             .select("precipitation"))
+        value = _reduce_mean_with_retry(c.mean(), lat, lng, polygon, CHIRPS_SCALE_M)
+        reason = None if value is not None else f"CHIRPS reduceRegion returned no value for {start} to {end}."
+    except Exception as exc:
+        logger.exception("Rainfall monthly fetch failed for %s (%s to %s)", label, start, end)
+        value = None
+        reason = f"{label} ({start} to {end}) fetch failed: {type(exc).__name__}: {exc}"
+    return {"month": label, "mm_per_day": round(value, 2) if value is not None else None, "reason": reason}
 
 
 def _fetch_rainfall_monthly(lat: float, lng: float, polygon: Optional[dict]) -> list:
     filter_region, _ = _region_geometry(lat, lng, polygon)
     year = _latest_completed_climate_year()
-    out = []
-    for month, label in zip((6, 7, 8, 9, 10), ("Jun", "Jul", "Aug", "Sep", "Oct")):
-        try:
-            c = (ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
-                 .filterDate(f"{year}-{month:02d}-01", f"{year}-{month + 1:02d}-01" if month < 10 else f"{year + 1}-01-01")
-                 .filterBounds(filter_region)
-                 .select("precipitation"))
-            value = _reduce_mean_with_retry(c.mean(), lat, lng, polygon, CHIRPS_SCALE_M) if c.size().getInfo() else None
-        except Exception:
-            logger.exception("Rainfall monthly fetch failed for %s", label)
-            value = None
-        out.append({"month": label, "mm_per_day": round(value, 2) if value is not None else None})
-    return out
+    months = list(zip((6, 7, 8, 9, 10), ("Jun", "Jul", "Aug", "Sep", "Oct")))
+    # Fetch all 5 months concurrently instead of one at a time — same
+    # ThreadPoolExecutor pattern fetch_farm_data() and SPI's history
+    # search already use, and roughly a 5x wall-clock win over the old
+    # sequential loop.
+    with ThreadPoolExecutor(max_workers=len(months)) as pool:
+        futures = [
+            pool.submit(_fetch_rainfall_one_month, lat, lng, polygon, filter_region, year, month, label)
+            for month, label in months
+        ]
+        results = [f.result() for f in futures]
+    order = {label: i for i, (_, label) in enumerate(months)}
+    results.sort(key=lambda r: order[r["month"]])  # thread completion order isn't guaranteed
+    return results
 
 
 def _fetch_lst(lat: float, lng: float, polygon: Optional[dict]) -> Optional[float]:

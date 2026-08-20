@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Dict, Optional
 import ee
@@ -37,7 +38,24 @@ SPI_HISTORY_SEARCH_SLACK = 2
 # a multi-minute request — better to stop, report what was found (or
 # that nothing was), and let the rest of the FarmScore computation
 # proceed than to make the whole request pay for it.
-SPI_TIME_BUDGET_S = 20.0
+#
+# Root cause of SPI's "always no data" (found after Rainfall/solar/GDD/
+# SPEI were already fixed): unlike those, which only need ONE season's
+# worth of monthly CHIRPS/ERA5 calls (5-10 total) to succeed, SPI needs
+# `history_years` (4) separate valid years PLUS the current season —
+# each year requiring its own 5 monthly CHIRPS calls. At 20s, that
+# budget assumed every one of those ~25-30 Earth Engine round trips
+# would land in under ~1s with zero retries; in practice a handful of
+# months needing _reduce_mean_with_retry's buffer-widening retries was
+# enough to burn the whole budget before 4 valid years were ever found
+# — every single request, at every location, hence "consistently".
+# _season_rainfall_mm below now fetches a year's 5 months concurrently
+# (same fix as Rainfall's monthly fetch), cutting each year's cost to
+# roughly its slowest single month instead of the sum of all 5 — but
+# the budget is also raised here, generously, since the gunicorn
+# worker timeout (Procfile: --timeout 300) leaves ample room and a
+# still-too-tight budget was the original failure mode.
+SPI_TIME_BUDGET_S = 60.0
 
 logger = logging.getLogger(__name__)
 GDD_BASE_TEMP_C = 10.0
@@ -122,21 +140,33 @@ def fetch_solar_radiation(lat: float, lng: float, polygon: Optional[dict] = None
         return {"available":False,"reason":f"Solar radiation fetch failed: {type(exc).__name__}: {exc}"}
 
 def _season_rainfall_mm(lat: float, lng: float, polygon: Optional[dict], year: int) -> Optional[float]:
+    """Total Jun-Oct seasonal rainfall (mm) for one year.
+
+    Fetches the 5 monthly CHIRPS sums CONCURRENTLY (previously
+    sequential) — see the SPI_TIME_BUDGET_S comment above for why: SPI
+    calls this once per candidate year, up to `history_years` (4) times,
+    and a sequential 5-call-per-year cost is what made the wall-clock
+    budget impossible to meet. This is the same ThreadPoolExecutor
+    pattern fetch_farm_data() already uses for its own top-level fetches.
+    """
     filter_region=_weather_region(lat,lng,polygon,CHIRPS_SCALE_M)
-    monthly_sums = []
-    any_month_attempted = False
-    for start, end in _month_windows(year):
+    windows = _month_windows(year)
+
+    def _one_month(window):
+        start, end = window
         coll=ee.ImageCollection(CHIRPS_COLLECTION).filterDate(start,end).filterBounds(filter_region).select("precipitation")
         try:
-            v = _reduce_mean_with_retry(coll.sum(),lat,lng,polygon,CHIRPS_SCALE_M)
-            any_month_attempted = True
-            if v is not None:
-                monthly_sums.append(v)
+            return _reduce_mean_with_retry(coll.sum(),lat,lng,polygon,CHIRPS_SCALE_M)
         except Exception:
             # Previously swallowed with zero trace — any real cause (auth,
             # quota, transient network error) was invisible in the logs,
             # which is exactly what made "why is SPI null" hard to debug.
-            logger.exception("CHIRPS month rainfall fetch failed for %s to %s", start, end)
+            logger.exception("CHIRPS month rainfall fetch failed for %s to %s (year %s)", start, end, year)
+            return None
+
+    with ThreadPoolExecutor(max_workers=len(windows)) as pool:
+        monthly_values = list(pool.map(_one_month, windows))
+    monthly_sums = [v for v in monthly_values if v is not None]
     if not monthly_sums:
         return None
     # Total seasonal rainfall = sum of monthly totals. If a month or two
@@ -190,14 +220,25 @@ def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None, current_ye
     except Exception as exc:
         logger.exception("Year-by-year SPI history fetch failed")
         return {"available":False,"reason":f"Rainfall history fetch failed: {type(exc).__name__}"}
+    elapsed = time.monotonic() - start_time
     if len(history)<4:
         reason = f"Insufficient completed rainfall history for SPI (found {len(history)} usable year(s) out of {years_checked} checked"
         reason += f", stopped early after {SPI_TIME_BUDGET_S:.0f}s time budget)." if time_budget_hit else f" out of {search_back} planned)."
+        # This is the one log line to check on Render if SPI goes back to
+        # "no data": time_budget_hit=True means the budget itself is the
+        # bottleneck again (raise SPI_TIME_BUDGET_S further); False with a
+        # low years_checked/history ratio means CHIRPS itself has real
+        # gaps at this location, not a timing problem.
+        logger.warning(
+            "fetch_spi: %s (elapsed=%.1fs, time_budget_hit=%s, years_checked=%d, history_found=%d)",
+            reason, elapsed, time_budget_hit, years_checked, len(history),
+        )
         return {"available":False,"reason":reason}
     current=current_val; mean=sum(history)/len(history); stddev=math.sqrt(sum((x-mean)**2 for x in history)/len(history))
     if stddev==0:return {"available":False,"reason":"Zero variance in rainfall history — cannot compute SPI."}
     spi=round((current-mean)/stddev,2)
     category="Extreme drought" if spi<=-2 else "Severe drought" if spi<=-1.5 else "Moderate drought" if spi<=-1 else "Near normal" if spi<1 else "Moderately wet" if spi<1.5 else "Very wet"
+    logger.info("fetch_spi succeeded: spi=%.2f years_used=%d elapsed=%.1fs", spi, len(history), elapsed)
     return {"available":True,"spi":spi,"category":category,"current_season_rainfall_mm":round(current,1),"historical_mean_mm":round(mean,1),"historical_stddev_mm":round(stddev,1),"years_used":len(history),"season_year":used_year,"source":"CHIRPS v3 (Jun-Oct completed-season window)"}
 
 def fetch_gdd(lat: float, lng: float, polygon: Optional[dict] = None, start: Optional[str] = None, end: Optional[str] = None, base_temp_c: float = GDD_BASE_TEMP_C) -> Dict[str, Any]:

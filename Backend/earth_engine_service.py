@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 _ee_initialised = False
 _init_lock = threading.Lock()
 _cache_lock = threading.Lock()
-_coord_cache: Dict[Any, Dict[str, Any]] = {}
+_coord_cache: Dict[Any, Tuple[float, Dict[str, Any]]] = {}
+COORD_CACHE_TTL_S = 900.0  # 15 minutes
 
 SEASON_MONTHS = [8, 9, 10]
 LOOKBACK_YEARS = max(1, int(os.getenv("GEE_LOOKBACK_YEARS", "3")))
@@ -507,9 +508,13 @@ def fetch_farm_data(lat: float, lng: float, polygon: Optional[dict] = None) -> D
     start_date, end_date = _date_window()
     cache_key = ("polygon", str(polygon)[:1000], start_date, end_date) if polygon else (round(lat, 5), round(lng, 5), start_date, end_date)
     with _cache_lock:
-        cached = _coord_cache.get(cache_key)
-    if cached:
-        return cached.copy()
+        entry = _coord_cache.get(cache_key)
+    if entry is not None:
+        cached_at, cached_result = entry
+        if time.time() - cached_at < COORD_CACHE_TTL_S:
+            return cached_result.copy()
+        # Expired — fall through and recompute rather than serving a
+        # result that might be an hour-old transient failure.
     with ThreadPoolExecutor(max_workers=4) as pool:
         f_idx = pool.submit(_fetch_s2_indices, lat, lng, polygon)
         f_month = pool.submit(_fetch_rainfall_monthly, lat, lng, polygon)
@@ -541,6 +546,9 @@ def fetch_farm_data(lat: float, lng: float, polygon: Optional[dict] = None) -> D
         "satellite_meta": {**meta, "data_window_start": start_date, "data_window_end": end_date, "region_mode": region_mode, "point_fallback_buffer_m": BUFFER_RADIUS_M},
         "ndvi_trend": _fetch_ndvi_trend(lat, lng, polygon),
     }
-    with _cache_lock:
-        _coord_cache[cache_key] = result
+    if result.get("rainfall") is not None:
+        with _cache_lock:
+            _coord_cache[cache_key] = (time.time(), result)
+    # else: don't lock in a rainfall failure — let the next request for
+    # this location retry immediately instead of waiting out the TTL.
     return result.copy()

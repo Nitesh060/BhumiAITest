@@ -221,16 +221,25 @@ def fetch_gdd(lat: float, lng: float, polygon: Optional[dict] = None, start: Opt
             if val is None:return {"available":False,"reason":"GDD reduction returned no value."}
             return {"available":True,"gdd":round(val,1),"base_temp_c":base_temp_c,"window":f"{start} to {end}","note":"Computed from ERA5-Land 2m air temperature (daily mean).","source":"ERA5-Land"}
 
-        monthly_sums = []
-        for m_start, m_end in _month_windows(year):
-            coll=ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR").filterDate(m_start,m_end).filterBounds(filter_region).select("temperature_2m").map(lambda img:img.subtract(273.15).subtract(base_temp_c).max(0).rename("GDD_daily"))
-            v=_reduce_mean_with_retry(coll.sum(),lat,lng,polygon,ERA5_LAND_SCALE_M)
-            if v is not None:
-                monthly_sums.append(v)
-        if not monthly_sums:
-            return {"available":False,"reason":"No month in the Jun-Oct window returned a usable ERA5-Land temperature value."}
-        w_start, w_end = _completed_season_window(year)
-        return {"available":True,"gdd":round(sum(monthly_sums),1),"base_temp_c":base_temp_c,"window":f"{w_start} to {w_end}","months_used":len(monthly_sums),"note":"Computed from ERA5-Land 2m air temperature (daily mean), not MODIS surface temperature.","source":"ERA5-Land"}
+        # Try the latest completed year first; if EVERY month in that
+        # year comes back empty, fall back one year earlier instead of
+        # "no data" outright — same fallback pattern already used by
+        # fetch_solar_radiation/fetch_spi/fetch_spei_proxy, which this
+        # function was missing (a real gap: it only ever tried one year
+        # with zero fallback).
+        last_reason = "No month in the Jun-Oct window returned a usable ERA5-Land temperature value."
+        for candidate_year in (year, year - 1):
+            monthly_sums = []
+            for m_start, m_end in _month_windows(candidate_year):
+                coll=ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR").filterDate(m_start,m_end).filterBounds(filter_region).select("temperature_2m").map(lambda img:img.subtract(273.15).subtract(base_temp_c).max(0).rename("GDD_daily"))
+                v=_reduce_mean_with_retry(coll.sum(),lat,lng,polygon,ERA5_LAND_SCALE_M)
+                if v is not None:
+                    monthly_sums.append(v)
+            if monthly_sums:
+                w_start, w_end = _completed_season_window(candidate_year)
+                return {"available":True,"gdd":round(sum(monthly_sums),1),"base_temp_c":base_temp_c,"window":f"{w_start} to {w_end}","months_used":len(monthly_sums),"note":"Computed from ERA5-Land 2m air temperature (daily mean), not MODIS surface temperature.","source":"ERA5-Land"}
+            last_reason = f"No month in {candidate_year}'s Jun-Oct window returned a usable ERA5-Land temperature value."
+        return {"available":False,"reason":last_reason}
     except Exception as exc:
         logger.exception("GDD fetch failed")
         return {"available":False,"reason":f"GDD computation failed: {type(exc).__name__}"}

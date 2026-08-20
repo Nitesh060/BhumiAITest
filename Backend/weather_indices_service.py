@@ -10,6 +10,7 @@ import ee
 from earth_engine_service import (
     _reduce_mean_with_retry,
     _scaled_region,
+    _getinfo_with_backoff,
     CHIRPS_SCALE_M,
     MODIS_LST_SCALE_M,
     ERA5_LAND_SCALE_M,
@@ -200,24 +201,36 @@ def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None, current_ye
     return {"available":True,"spi":spi,"category":category,"current_season_rainfall_mm":round(current,1),"historical_mean_mm":round(mean,1),"historical_stddev_mm":round(stddev,1),"years_used":len(history),"season_year":used_year,"source":"CHIRPS v3 (Jun-Oct completed-season window)"}
 
 def fetch_gdd(lat: float, lng: float, polygon: Optional[dict] = None, start: Optional[str] = None, end: Optional[str] = None, base_temp_c: float = GDD_BASE_TEMP_C) -> Dict[str, Any]:
+    """Growing Degree Days from ERA5-Land 2m air temperature.
+
+    Previously computed from MODIS daytime LST (land *surface* skin
+    temperature) — a reasonable stand-in when nothing else was
+    reliable, but GDD is conventionally defined using *air*
+    temperature, not surface temperature (surface temp swings far
+    wider than air temp, especially on bare/dry soil, which skews GDD
+    high). Switched to ERA5-Land's temperature_2m, the same dataset and
+    band already used for this app's Air Temperature parameter — one
+    less independent data source failure mode, and a more correct
+    GDD definition.
+    """
     try:
-        filter_region=_weather_region(lat,lng,polygon,MODIS_LST_SCALE_M); year=_latest_completed_year()
+        filter_region=_weather_region(lat,lng,polygon,ERA5_LAND_SCALE_M); year=_latest_completed_year()
         if start and end:
-            coll=ee.ImageCollection("MODIS/061/MOD11A1").filterDate(start,end).filterBounds(filter_region).select("LST_Day_1km").map(lambda img:img.multiply(0.02).subtract(273.15).subtract(base_temp_c).max(0).rename("GDD_daily"))
-            val=_reduce_mean_with_retry(coll.sum(),lat,lng,polygon,MODIS_LST_SCALE_M)
+            coll=ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR").filterDate(start,end).filterBounds(filter_region).select("temperature_2m").map(lambda img:img.subtract(273.15).subtract(base_temp_c).max(0).rename("GDD_daily"))
+            val=_reduce_mean_with_retry(coll.sum(),lat,lng,polygon,ERA5_LAND_SCALE_M)
             if val is None:return {"available":False,"reason":"GDD reduction returned no value."}
-            return {"available":True,"gdd":round(val,1),"base_temp_c":base_temp_c,"window":f"{start} to {end}","note":"Computed from MODIS daytime LST, not true air temperature — an approximation.","source":"MODIS LST"}
+            return {"available":True,"gdd":round(val,1),"base_temp_c":base_temp_c,"window":f"{start} to {end}","note":"Computed from ERA5-Land 2m air temperature (daily mean).","source":"ERA5-Land"}
 
         monthly_sums = []
         for m_start, m_end in _month_windows(year):
-            coll=ee.ImageCollection("MODIS/061/MOD11A1").filterDate(m_start,m_end).filterBounds(filter_region).select("LST_Day_1km").map(lambda img:img.multiply(0.02).subtract(273.15).subtract(base_temp_c).max(0).rename("GDD_daily"))
-            v=_reduce_mean_with_retry(coll.sum(),lat,lng,polygon,MODIS_LST_SCALE_M)
+            coll=ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR").filterDate(m_start,m_end).filterBounds(filter_region).select("temperature_2m").map(lambda img:img.subtract(273.15).subtract(base_temp_c).max(0).rename("GDD_daily"))
+            v=_reduce_mean_with_retry(coll.sum(),lat,lng,polygon,ERA5_LAND_SCALE_M)
             if v is not None:
                 monthly_sums.append(v)
         if not monthly_sums:
-            return {"available":False,"reason":"No month in the Jun-Oct window returned a usable MODIS LST value."}
+            return {"available":False,"reason":"No month in the Jun-Oct window returned a usable ERA5-Land temperature value."}
         w_start, w_end = _completed_season_window(year)
-        return {"available":True,"gdd":round(sum(monthly_sums),1),"base_temp_c":base_temp_c,"window":f"{w_start} to {w_end}","months_used":len(monthly_sums),"note":"Computed from MODIS daytime LST, not true air temperature — an approximation.","source":"MODIS LST"}
+        return {"available":True,"gdd":round(sum(monthly_sums),1),"base_temp_c":base_temp_c,"window":f"{w_start} to {w_end}","months_used":len(monthly_sums),"note":"Computed from ERA5-Land 2m air temperature (daily mean), not MODIS surface temperature.","source":"ERA5-Land"}
     except Exception as exc:
         logger.exception("GDD fetch failed")
         return {"available":False,"reason":f"GDD computation failed: {type(exc).__name__}"}
@@ -256,3 +269,72 @@ def fetch_spei_proxy(lat: float, lng: float, polygon: Optional[dict] = None, cur
     except Exception as exc:
         logger.exception("SPEI proxy fetch failed")
         return {"available":False,"reason":f"SPEI proxy computation failed: {type(exc).__name__}"}
+
+
+CSIC_SPEI_SCALE_M = 55660  # native pixel size of CSIC/SPEI/2_11 (0.5 degree)
+
+
+def fetch_spei_index(lat: float, lng: float, polygon: Optional[dict] = None, year: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """SPEI from CSIC's SPEIbase (CSIC/SPEI/2_11) — a purpose-built,
+    peer-reviewed SPEI product using the proper FAO-56 Penman-Monteith
+    PET method, preferred over fetch_spei_proxy's home-grown Thornthwaite
+    approximation whenever it has coverage.
+
+    Two honest trade-offs, always surfaced in the result:
+      - ~55.66km pixel size (0.5 degree) — a REGIONAL drought signal,
+        not farm-specific. fetch_spei_proxy, whatever its reliability
+        problems, is at least computed at the farm's own location.
+      - As of this writing CSIC/SPEI/2_11's own data ends 2025-01-01
+        (confirmed against the live Earth Engine catalog page) — so for
+        a "current season" query in 2026 or later this will typically
+        find nothing for the target year and return None, letting the
+        caller fall back to the proxy. This is not a bug: querying an
+        old year on purpose (backdated analysis) will find data.
+
+    Returns None (never raises) if CSIC has no coverage for this
+    year/location, so callers can fall back cleanly.
+    """
+    year = year or _latest_completed_year()
+    try:
+        region = _weather_region(lat, lng, polygon, CSIC_SPEI_SCALE_M)
+        coll = (
+            ee.ImageCollection("CSIC/SPEI/2_11")
+            .filterDate(f"{year}-06-01", f"{year}-12-01")
+            .select("SPEI_03_month")
+            .sort("system:time_start", False)
+        )
+        if _getinfo_with_backoff(coll.size()) == 0:
+            return None
+        latest = coll.first()
+        val = _reduce_mean_with_retry(latest, lat, lng, polygon, CSIC_SPEI_SCALE_M)
+        if val is None:
+            return None
+        as_of = _getinfo_with_backoff(ee.Date(latest.get("system:time_start")).format("YYYY-MM-dd"))
+        category = ("Extreme drought" if val <= -2 else "Severe drought" if val <= -1.5 else
+                    "Moderate drought" if val <= -1 else "Near normal" if val < 1 else
+                    "Moderately wet" if val < 1.5 else "Very wet")
+        return {
+            "available": True, "spei_proxy": round(val, 2), "category": category,
+            "season_year": year, "as_of": as_of,
+            "method": "CSIC SPEIbase, 3-month SPEI — proper FAO-56 Penman-Monteith PET (peer-reviewed), not the Thornthwaite proxy.",
+            "resolution_note": "~55.7km regional pixel (0.5°) — a regional drought signal, not specific to this farm.",
+            "source": "CSIC/SPEI/2_11",
+        }
+    except Exception:
+        logger.exception("CSIC SPEI fetch failed (non-fatal — falls back to the Thornthwaite proxy)")
+        return None
+
+
+def fetch_spei(lat: float, lng: float, polygon: Optional[dict] = None, current_year: Optional[int] = None) -> Dict[str, Any]:
+    """Top-level SPEI entry point. Tries the proper CSIC SPEIbase
+    product first (see fetch_spei_index), falls back to the
+    Thornthwaite-proxy calculation (fetch_spei_proxy) if CSIC has no
+    coverage for this year/location.
+    """
+    current_year = current_year or _latest_completed_year()
+    if current_year >= datetime.utcnow().year:
+        current_year = datetime.utcnow().year - 1
+    result = fetch_spei_index(lat, lng, polygon, current_year)
+    if result is not None:
+        return result
+    return fetch_spei_proxy(lat, lng, polygon, current_year)

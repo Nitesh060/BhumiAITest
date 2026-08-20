@@ -94,9 +94,22 @@ def fetch_district_yield_comparison(crop: str, district: str, state: str, farm_y
 
     NOTE: There is no single stable open data.gov.in resource ID for
     district-level crop yield across all of India's states — coverage is
-    patchy and resource IDs vary by state/dataset release. Wire the
-    correct resource ID for your states of operation before relying on
-    this in production; treat this function as a template.
+    patchy and resource IDs vary by state/dataset release (confirmed
+    again as of Aug 2026 — the district-level APY datasets on data.gov.in
+    are published per-state, e.g. separate Karnataka/Telangana/Gujarat
+    resources, not one national one). Two more promising leads if you're
+    wiring this up for real:
+      - https://upag.gov.in — "UPAg", GoI's newer unified agri-statistics
+        platform, explicitly built to consolidate exactly this kind of
+        cross-state reporting. Check its API/data-export options.
+      - https://data.desagri.gov.in/website/crops-apy-report-web and
+        .../crops-report-major-contributing-district-web — the
+        Directorate of Economics & Statistics' own APY report tool.
+    Neither has been verified against a real API call from this build
+    environment (no network access here) — confirm the actual request/
+    response shape before wiring either in. Wire the correct resource ID
+    for your states of operation before relying on this in production;
+    treat this function as a template.
     """
     if not DATA_GOV_IN_KEY:
         return _unavailable("DATA_GOV_IN_KEY not set — get a free key at https://data.gov.in/")
@@ -104,7 +117,7 @@ def fetch_district_yield_comparison(crop: str, district: str, state: str, farm_y
     return _unavailable(
         "District yield resource ID needs to be configured per state — "
         "no single national dataset covers all 8 of AFPL's RTS states consistently. "
-        "See module docstring."
+        "See module docstring for two concrete leads (UPAg, DES APY reports)."
     )
 
 
@@ -114,16 +127,17 @@ def fetch_major_crops_in_region(district: str, state: str) -> Dict[str, Any]:
     sample. Sourced from Agriculture Census / District-level crop
     statistics on data.gov.in.
 
-    Same caveat as fetch_district_yield_comparison: data.gov.in's
-    district-level crop statistics coverage varies by state and dataset
-    vintage — there's no single resource ID that reliably covers all
-    districts. Configure the resource ID for your operating states
-    before relying on this; this is a working template, not a drop-in.
+    Same caveat and same two leads as fetch_district_yield_comparison()
+    above — data.gov.in's district-level crop statistics coverage
+    varies by state and dataset vintage, with no single resource ID
+    that reliably covers all districts. Configure the resource ID for
+    your operating states before relying on this; this is a working
+    template, not a drop-in.
     """
     if not DATA_GOV_IN_KEY:
         return _unavailable("DATA_GOV_IN_KEY not set — get a free key at https://data.gov.in/")
 
     return _unavailable(
         "District crop-area/yield resource ID needs to be configured per state — "
-        "same data.gov.in coverage gap as district yield. See module docstring."
+        "same data.gov.in coverage gap as district yield. See module docstring for two concrete leads (UPAg, DES APY reports)."
     )

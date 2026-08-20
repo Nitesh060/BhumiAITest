@@ -54,24 +54,61 @@ def _weather_region(lat: float, lng: float, polygon: Optional[dict], scale_m: fl
 def _completed_season_window(year: int) -> tuple[str, str]:
     return f"{year}-06-01", f"{year}-11-01"
 
+def _month_windows(year: int, months: tuple = (6, 7, 8, 9, 10)) -> list:
+    """The 5 Jun-Oct month windows for a season year, as (start, end)
+    date-string pairs — the same month boundaries the rainfall-chart
+    fetch (earth_engine_service._fetch_rainfall_monthly) already uses.
+
+    Every function below used to run ONE reduceRegion() over the full
+    ~153-day season window in a single shot. In production this was
+    consistently failing under this service's resource constraints —
+    confirmed first for rainfall's score value (which a single 5-month
+    CHIRPS aggregation kept failing on, while the PDF's 5 separate
+    ~30-day monthly aggregations reliably succeeded), then found to be
+    the same underlying issue for every parameter here that used the
+    identical wide-window pattern: solar radiation, SPI, SPEI, GDD —
+    every one of them was showing "no data" at every location. Breaking
+    each season into these 5 smaller chunks and combining the results
+    (sum-of-sums for additive quantities like rainfall/GDD, mean-of-
+    means for rate quantities like solar radiation/temperature) fixes
+    all of them by the same construction that fixed rainfall.
+    """
+    out = []
+    for m in months:
+        start = f"{year}-{m:02d}-01"
+        end = f"{year}-{m + 1:02d}-01" if m < 12 else f"{year + 1}-01-01"
+        out.append((start, end))
+    return out
+
 def _latest_completed_year() -> int:
     return datetime.utcnow().year - 1
 
 def fetch_solar_radiation(lat: float, lng: float, polygon: Optional[dict] = None, start: Optional[str] = None, end: Optional[str] = None) -> Dict[str, Any]:
     try:
         filter_region=_weather_region(lat,lng,polygon,ERA5_LAND_SCALE_M); year=_latest_completed_year()
-        # Try the latest completed season first; if that specific window
-        # comes back empty (a real data gap for those exact dates — buffer
-        # widening in _reduce_mean_with_retry already handles pixel-coverage
-        # issues), fall back one year earlier instead of "no data" outright.
-        windows = [(start, end)] if start and end else [_completed_season_window(year), _completed_season_window(year - 1)]
+        # Try the latest completed season first; if that whole year comes
+        # back with no usable months, fall back one year earlier instead
+        # of "no data" outright.
+        candidate_years = [] if start and end else [year, year - 1]
         last_reason = "ERA5-Land solar radiation reduction returned no value."
-        for w_start, w_end in windows:
-            coll=ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR").filterDate(w_start,w_end).filterBounds(filter_region).select("surface_solar_radiation_downwards_sum")
+        for cy in candidate_years:
+            monthly_vals = []
+            for w_start, w_end in _month_windows(cy):
+                coll=ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR").filterDate(w_start,w_end).filterBounds(filter_region).select("surface_solar_radiation_downwards_sum")
+                v=_reduce_mean_with_retry(coll.mean(),lat,lng,polygon,ERA5_LAND_SCALE_M)
+                if v is not None:
+                    monthly_vals.append(v)
+            if monthly_vals:
+                val = sum(monthly_vals) / len(monthly_vals)
+                w_start, w_end = _completed_season_window(cy)
+                return {"available":True,"avg_daily_solar_radiation_mj_m2":round(max(0.0,val)/1_000_000,2),"window":f"{w_start} to {w_end}","months_used":len(monthly_vals),"source":"ECMWF ERA5-Land Daily Aggregate"}
+            last_reason = f"No month in {cy}'s Jun-Oct window returned a usable ERA5-Land value."
+        if start and end:
+            coll=ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR").filterDate(start,end).filterBounds(filter_region).select("surface_solar_radiation_downwards_sum")
             val=_reduce_mean_with_retry(coll.mean(),lat,lng,polygon,ERA5_LAND_SCALE_M)
             if val is not None:
-                return {"available":True,"avg_daily_solar_radiation_mj_m2":round(max(0.0,val)/1_000_000,2),"window":f"{w_start} to {w_end}","source":"ECMWF ERA5-Land Daily Aggregate"}
-            last_reason = f"ERA5-Land solar radiation reduction returned no value for {w_start} to {w_end}."
+                return {"available":True,"avg_daily_solar_radiation_mj_m2":round(max(0.0,val)/1_000_000,2),"window":f"{start} to {end}","source":"ECMWF ERA5-Land Daily Aggregate"}
+            last_reason = f"ERA5-Land solar radiation reduction returned no value for {start} to {end}."
         return {"available":False,"reason":last_reason}
     except Exception as exc:
         # Region/window setup used to sit OUTSIDE this try block, so an
@@ -84,17 +121,28 @@ def fetch_solar_radiation(lat: float, lng: float, polygon: Optional[dict] = None
         return {"available":False,"reason":f"Solar radiation fetch failed: {type(exc).__name__}: {exc}"}
 
 def _season_rainfall_mm(lat: float, lng: float, polygon: Optional[dict], year: int) -> Optional[float]:
-    start,end=_completed_season_window(year)
     filter_region=_weather_region(lat,lng,polygon,CHIRPS_SCALE_M)
-    coll=ee.ImageCollection(CHIRPS_COLLECTION).filterDate(start,end).filterBounds(filter_region).select("precipitation")
-    try:
-        return _reduce_mean_with_retry(coll.sum(),lat,lng,polygon,CHIRPS_SCALE_M)
-    except Exception:
-        # Previously swallowed with zero trace — any real cause (auth,
-        # quota, transient network error) was invisible in the logs,
-        # which is exactly what made "why is SPI null" hard to debug.
-        logger.exception("CHIRPS season rainfall fetch failed for year %s", year)
+    monthly_sums = []
+    any_month_attempted = False
+    for start, end in _month_windows(year):
+        coll=ee.ImageCollection(CHIRPS_COLLECTION).filterDate(start,end).filterBounds(filter_region).select("precipitation")
+        try:
+            v = _reduce_mean_with_retry(coll.sum(),lat,lng,polygon,CHIRPS_SCALE_M)
+            any_month_attempted = True
+            if v is not None:
+                monthly_sums.append(v)
+        except Exception:
+            # Previously swallowed with zero trace — any real cause (auth,
+            # quota, transient network error) was invisible in the logs,
+            # which is exactly what made "why is SPI null" hard to debug.
+            logger.exception("CHIRPS month rainfall fetch failed for %s to %s", start, end)
+    if not monthly_sums:
         return None
+    # Total seasonal rainfall = sum of monthly totals. If a month or two
+    # is missing, this slightly understates the season vs a true 5-month
+    # total — acceptable given the alternative (the whole season coming
+    # back as "no data" because ONE wide aggregation failed) is worse.
+    return sum(monthly_sums)
 
 def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None, current_year: Optional[int] = None, history_years: int = 4) -> Dict[str, Any]:
     start_time = time.monotonic()
@@ -153,11 +201,23 @@ def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None, current_ye
 
 def fetch_gdd(lat: float, lng: float, polygon: Optional[dict] = None, start: Optional[str] = None, end: Optional[str] = None, base_temp_c: float = GDD_BASE_TEMP_C) -> Dict[str, Any]:
     try:
-        filter_region=_weather_region(lat,lng,polygon,MODIS_LST_SCALE_M); year=_latest_completed_year(); start,end=(start,end) if start and end else _completed_season_window(year)
-        coll=ee.ImageCollection("MODIS/061/MOD11A1").filterDate(start,end).filterBounds(filter_region).select("LST_Day_1km").map(lambda img:img.multiply(0.02).subtract(273.15).subtract(base_temp_c).max(0).rename("GDD_daily"))
-        val=_reduce_mean_with_retry(coll.sum(),lat,lng,polygon,MODIS_LST_SCALE_M)
-        if val is None:return {"available":False,"reason":"GDD reduction returned no value."}
-        return {"available":True,"gdd":round(val,1),"base_temp_c":base_temp_c,"window":f"{start} to {end}","note":"Computed from MODIS daytime LST, not true air temperature — an approximation.","source":"MODIS LST"}
+        filter_region=_weather_region(lat,lng,polygon,MODIS_LST_SCALE_M); year=_latest_completed_year()
+        if start and end:
+            coll=ee.ImageCollection("MODIS/061/MOD11A1").filterDate(start,end).filterBounds(filter_region).select("LST_Day_1km").map(lambda img:img.multiply(0.02).subtract(273.15).subtract(base_temp_c).max(0).rename("GDD_daily"))
+            val=_reduce_mean_with_retry(coll.sum(),lat,lng,polygon,MODIS_LST_SCALE_M)
+            if val is None:return {"available":False,"reason":"GDD reduction returned no value."}
+            return {"available":True,"gdd":round(val,1),"base_temp_c":base_temp_c,"window":f"{start} to {end}","note":"Computed from MODIS daytime LST, not true air temperature — an approximation.","source":"MODIS LST"}
+
+        monthly_sums = []
+        for m_start, m_end in _month_windows(year):
+            coll=ee.ImageCollection("MODIS/061/MOD11A1").filterDate(m_start,m_end).filterBounds(filter_region).select("LST_Day_1km").map(lambda img:img.multiply(0.02).subtract(273.15).subtract(base_temp_c).max(0).rename("GDD_daily"))
+            v=_reduce_mean_with_retry(coll.sum(),lat,lng,polygon,MODIS_LST_SCALE_M)
+            if v is not None:
+                monthly_sums.append(v)
+        if not monthly_sums:
+            return {"available":False,"reason":"No month in the Jun-Oct window returned a usable MODIS LST value."}
+        w_start, w_end = _completed_season_window(year)
+        return {"available":True,"gdd":round(sum(monthly_sums),1),"base_temp_c":base_temp_c,"window":f"{w_start} to {w_end}","months_used":len(monthly_sums),"note":"Computed from MODIS daytime LST, not true air temperature — an approximation.","source":"MODIS LST"}
     except Exception as exc:
         logger.exception("GDD fetch failed")
         return {"available":False,"reason":f"GDD computation failed: {type(exc).__name__}"}
@@ -170,17 +230,28 @@ def fetch_spei_proxy(lat: float, lng: float, polygon: Optional[dict] = None, cur
     last_reason = f"Insufficient completed-season data for SPEI proxy ({current_year})."
     try:
         # Try the latest completed season first, then fall back one year
-        # earlier if THAT specific window has a gap in either CHIRPS or
+        # earlier if THAT year has no usable months in either CHIRPS or
         # MODIS — same fallback pattern as rainfall/solar/SPI above.
         for y in (current_year, current_year - 1):
-            rain=_reduce_mean_with_retry(ee.ImageCollection(CHIRPS_COLLECTION).filterDate(f"{y}-06-01",f"{y}-11-01").filterBounds(chirps_region).select("precipitation").sum(),lat,lng,polygon,CHIRPS_SCALE_M)
-            temp=_reduce_mean_with_retry(ee.ImageCollection("MODIS/061/MOD11A1").filterDate(f"{y}-06-01",f"{y}-11-01").filterBounds(modis_region).select("LST_Day_1km").mean().multiply(0.02).subtract(273.15),lat,lng,polygon,MODIS_LST_SCALE_M)
-            if rain is None or temp is None or temp<=0:
+            rain_monthly, temp_monthly = [], []
+            for m_start, m_end in _month_windows(y):
+                r=_reduce_mean_with_retry(ee.ImageCollection(CHIRPS_COLLECTION).filterDate(m_start,m_end).filterBounds(chirps_region).select("precipitation").sum(),lat,lng,polygon,CHIRPS_SCALE_M)
+                if r is not None:
+                    rain_monthly.append(r)
+                t=_reduce_mean_with_retry(ee.ImageCollection("MODIS/061/MOD11A1").filterDate(m_start,m_end).filterBounds(modis_region).select("LST_Day_1km").mean().multiply(0.02).subtract(273.15),lat,lng,polygon,MODIS_LST_SCALE_M)
+                if t is not None:
+                    temp_monthly.append(t)
+            if not rain_monthly or not temp_monthly:
+                last_reason = f"Insufficient completed-season data for SPEI proxy ({y})."
+                continue
+            rain = sum(rain_monthly)  # total seasonal rainfall = sum of monthly totals
+            temp = sum(temp_monthly) / len(temp_monthly)  # seasonal mean temp = average of monthly means
+            if temp<=0:
                 last_reason = f"Insufficient completed-season data for SPEI proxy ({y})."
                 continue
             heat=(temp/5)**1.514; a=6.75e-7*heat**3-7.71e-5*heat**2+1.792e-2*heat+0.49239; pet=16*((10*temp/heat)**a)*5 if heat>0 else 0
             proxy=round(max(-3,min(3,(rain-pet)/300)),2); category="Dry stress (proxy)" if proxy<=-1.5 else "Excess moisture (proxy)" if proxy>=1.5 else "Near normal (proxy)"
-            return {"available":True,"spei_proxy":proxy,"category":category,"rainfall_mm":round(rain,1),"estimated_pet_mm":round(pet,1),"season_year":y,"method":"Thornthwaite PET temperature-only proxy; NOT the full standard SPEI.","source":"CHIRPS v3 + MODIS LST"}
+            return {"available":True,"spei_proxy":proxy,"category":category,"rainfall_mm":round(rain,1),"estimated_pet_mm":round(pet,1),"season_year":y,"months_used":min(len(rain_monthly),len(temp_monthly)),"method":"Thornthwaite PET temperature-only proxy; NOT the full standard SPEI.","source":"CHIRPS v3 + MODIS LST"}
         return {"available":False,"reason":last_reason}
     except Exception as exc:
         logger.exception("SPEI proxy fetch failed")

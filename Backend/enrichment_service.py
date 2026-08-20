@@ -125,18 +125,38 @@ def _season_feature(y, season, s2_all, region):
 
 
 def fetch_cropping_history(lat: float, lng: float, polygon: Optional[dict] = None, years: Tuple[int,...]=(2021,2022,2023)) -> Dict[str, Any]:
+    """Returns ``{"years": [{"year": Y, "kharif": {"ndvi": v, "cropped": bool},
+    "rabi": {...}}, ...], "source": ...}`` — nested by year with a
+    kharif/rabi sub-dict each, NOT a flat per-(year,season) list. This
+    matters: pdf_report.py's cropping-history table, crop_intelligence_
+    service.detect_crop_rotation(), and report.js's renderCroppingHistory()
+    all read exactly this nested shape (``entry.get("years")``, then
+    ``y["kharif"]["cropped"]``) — a flat ``{"history": [...]}`` shape
+    silently fails every one of those `.get("years")` / `.get("kharif")`
+    lookups, which is why this table showed "No historical signal" /
+    "No cropping history available" regardless of the real satellite
+    data underneath (report.js had grown its own client-side workaround
+    for this — refreshLatestCroppingHistory() — precisely because this
+    function's original shape was unusable for the report).
+    """
     region=_get_region(lat,lng,polygon); s2=ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").filterBounds(region)
-    out=[]
+    by_year: Dict[int, Dict[str, Any]] = {}
     try:
         for season in ("kharif","rabi"):
             fc=ee.FeatureCollection(ee.List(years).map(lambda y:_season_feature(y,season,s2,region)))
             raw=fc.getInfo() or {}
             for f in raw.get("features",[]):
-                v=f.get("properties",{}).get("ndvi")
-                out.append({"year":int(f["properties"]["year"]),"season":season,"ndvi":None if v is None or v<=-900 else round(float(v),4),"active":bool(v is not None and v>-900 and v>0.25)})
+                props = f.get("properties", {})
+                year = int(props["year"])
+                v = props.get("ndvi")
+                ndvi = None if v is None or v <= -900 else round(float(v), 4)
+                by_year.setdefault(year, {"year": year})[season] = {
+                    "ndvi": ndvi,
+                    "cropped": bool(ndvi is not None and ndvi > 0.25),
+                }
     except Exception:
         logger.exception("Cropping-history fetch failed")
-    return {"history":sorted(out,key=lambda x:(x["year"],x["season"])),"source":"Sentinel-2 seasonal NDVI"}
+    return {"years": sorted(by_year.values(), key=lambda x: x["year"]), "source": "Sentinel-2 seasonal NDVI"}
 
 
 def fetch_drought_instances(lat: float, lng: float, start_year: int=2000, buffer_m: int=25000) -> Dict[str, Any]:

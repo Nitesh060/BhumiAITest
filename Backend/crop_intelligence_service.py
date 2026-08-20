@@ -100,6 +100,92 @@ def identify_crop_heuristic(lat: float, lng: float, polygon: Optional[dict] = No
     }
 
 
+def identify_crop_history(lat: float, lng: float, polygon: Optional[dict] = None,
+                           cropping_history: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Per-season crop NAME guess (not just cropped/fallow) across the
+    same multi-year window enrichment_service.fetch_cropping_history()
+    already covers — this is the piece that turns a bare "Cropped
+    signal" into an actual "Rice" / "Wheat" / "Maize" guess for each
+    past season, the way a report like this needs.
+
+    Reuses `cropping_history` (the {"years": [...]} shape from
+    enrichment_service.fetch_cropping_history()) if the caller already
+    has it — avoids re-fetching NDVI values already sitting in memory.
+    If not supplied, fetches it fresh.
+
+    Same honesty caveat as identify_crop_heuristic(): this is shape-
+    matching (NDVI level for cropped/fallow + an early-Kharif flood
+    signature for Rice vs Maize/Groundnut), not a trained per-pixel
+    crop classifier. Confidence never exceeds "moderate".
+    """
+    if cropping_history is None:
+        from enrichment_service import fetch_cropping_history
+        cropping_history = fetch_cropping_history(lat, lng, polygon)
+
+    region = _get_region(lat, lng, polygon)
+    years_out: List[Dict[str, Any]] = []
+
+    for year_entry in cropping_history.get("years", []):
+        year = year_entry.get("year")
+        season_guesses: Dict[str, Any] = {}
+        for season_key, season_label in (("kharif", "Kharif"), ("rabi", "Rabi")):
+            season_data = year_entry.get(season_key) or {}
+            ndvi = season_data.get("ndvi")
+            cropped = bool(season_data.get("cropped"))
+
+            if not cropped or ndvi is None:
+                season_guesses[season_key] = {
+                    "identified_crop": None,
+                    "confidence": "none",
+                    "reason": "No active-crop NDVI signal for this season — fallow or no scenes.",
+                }
+                continue
+
+            if season_key == "kharif":
+                flood_signal = _check_early_season_flooding_for_year(region, year)
+                crop = "Rice" if flood_signal else "Maize"
+                confidence = "moderate" if flood_signal else "low"
+                note = None if flood_signal else "Could also be Groundnut — NDVI shape alone can't distinguish them reliably."
+            else:  # rabi
+                crop, confidence, note = "Wheat", "low", "Rabi crop-type guess defaults to Wheat (the dominant Rabi crop in this app's crop set) — could also be Maize or another Rabi crop."
+
+            season_guesses[season_key] = {
+                "identified_crop": crop,
+                "confidence": confidence,
+                "ndvi": ndvi,
+                "note": note,
+            }
+
+        years_out.append({"year": year, **season_guesses})
+
+    return {
+        "years": years_out,
+        "method": "NDVI cropped/fallow signal + early-Kharif flood signature per season — a heuristic, not a trained crop-classification model.",
+        "note": "Confidence is capped at 'moderate' — this app has no ground-truth labels to validate historical crop identity against. Treat as a starting hypothesis for field verification, not a confirmed record.",
+    }
+
+
+def _check_early_season_flooding_for_year(region, year: int) -> bool:
+    """Same signal as _check_early_season_flooding() (NDWI > 0 in the
+    early-Kharif transplanting window), but for an arbitrary past year
+    instead of the hardcoded 2023 that function uses for the *current*
+    season's identification.
+    """
+    try:
+        s2 = (
+            ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+            .filterDate(f"{year}-06-15", f"{year}-08-15")
+            .filterBounds(region)
+            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
+        )
+        ndwi_img = s2.map(lambda img: img.normalizedDifference(["B3", "B8"]).rename("NDWI")).select("NDWI").mean()
+        val = _reduce_mean(ndwi_img, region, scale=20)
+        return val is not None and val > 0
+    except Exception:
+        logger.exception("Historical flood-signature check failed for year %s (non-fatal)", year)
+        return False
+
+
 def _fetch_monthly_ndvi(region) -> List[Optional[float]]:
     monthly = []
     for m in range(1, 13):

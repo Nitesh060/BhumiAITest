@@ -25,7 +25,7 @@ _SOURCES = {
     "vh":"Sentinel-1 SAR", "vh_vv":"Sentinel-1 SAR", "rvi":"Sentinel-1 SAR",
     "rainfall":"CHIRPS v3", "air_temp":"ERA5-Land 2m Air Temperature",
     "solar_radiation":"ERA5-Land", "spi":"CHIRPS v3", "spei":"CHIRPS v3 + MODIS LST",
-    "gdd":"MODIS LST", "lst":"MODIS LST",
+    "gdd":"ERA5-Land", "lst":"MODIS LST",
 }
 
 

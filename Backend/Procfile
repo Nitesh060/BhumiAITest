@@ -1,1 +1,0 @@
-web: gunicorn wsgi_render:application --workers 1 --threads 2 --timeout 300 --worker-tmp-dir /dev/shm --max-requests 30 --max-requests-jitter 10

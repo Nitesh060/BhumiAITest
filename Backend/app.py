@@ -68,7 +68,7 @@ from weather_soil_terrain_service import (
 from enrichment_service import fetch_topography as _fetch_topography_for_flood
 from spectral_indices import fetch_sar_moisture as _fetch_sar_for_flood
 from spectral_indices import fetch_extended_indices
-from weather_indices_service import fetch_solar_radiation, fetch_spi, fetch_gdd, fetch_spei_proxy
+from weather_indices_service import fetch_solar_radiation, fetch_spi, fetch_gdd, fetch_spei
 from comprehensive_score_service import compute_comprehensive_score, DEFAULT_WEIGHTS
 from credit_intelligence_service import (
     estimate_income,
@@ -194,7 +194,7 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
             score_pool.submit(_safe_score_fetch, "solar", fetch_solar_radiation, lat, lng, polygon),
             score_pool.submit(_safe_score_fetch, "spi", fetch_spi, lat, lng, polygon),
             score_pool.submit(_safe_score_fetch, "gdd", fetch_gdd, lat, lng, polygon),
-            score_pool.submit(_safe_score_fetch, "spei", fetch_spei_proxy, lat, lng, polygon),
+            score_pool.submit(_safe_score_fetch, "spei", fetch_spei, lat, lng, polygon),
         ]
         score_results = {name: val for name, val in (f.result() for f in score_futures)}
 
@@ -1628,7 +1628,7 @@ def comprehensive_score_route():
             pool.submit(_safe, "solar", fetch_solar_radiation, lat, lng, polygon),
             pool.submit(_safe, "spi", fetch_spi, lat, lng, polygon),
             pool.submit(_safe, "gdd", fetch_gdd, lat, lng, polygon),
-            pool.submit(_safe, "spei", fetch_spei_proxy, lat, lng, polygon),
+            pool.submit(_safe, "spei", fetch_spei, lat, lng, polygon),
         ]
         results = {name: val for name, val in (f.result() for f in futures)}
 

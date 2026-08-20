@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 import ee
@@ -17,8 +18,25 @@ from earth_engine_service import (
 # How many extra years back fetch_spi will search, beyond the minimum
 # number of history years it needs, before giving up. A couple of
 # sporadic per-year CHIRPS gaps shouldn't be able to sink the whole SPI
-# computation when a few more years of history are just as valid.
-SPI_HISTORY_SEARCH_SLACK = 4
+# computation when a few more years of history are just as valid — but
+# this fans out to individual Earth Engine calls, each with its own
+# retry/backoff (see earth_engine_service._getinfo_with_backoff), so it
+# doubles as SPI_TIME_BUDGET_S's backstop rather than the primary limit:
+# under a real, non-transient outage every one of those calls can burn
+# its full retry budget, and 8 sequential worst-case calls adds up to
+# minutes, not seconds (this happened in production — a single /calculate
+# request took 171s largely inside this loop). Keep this modest; let the
+# time budget below be what actually bounds worst-case latency.
+SPI_HISTORY_SEARCH_SLACK = 2
+
+# Hard wall-clock cap on how long fetch_spi will keep searching for
+# history once the current season's value is in hand. If Earth Engine
+# is having a sustained (not transient) bad time, retrying 8 more years
+# each with their own multi-attempt backoff can turn one parameter into
+# a multi-minute request — better to stop, report what was found (or
+# that nothing was), and let the rest of the FarmScore computation
+# proceed than to make the whole request pay for it.
+SPI_TIME_BUDGET_S = 20.0
 
 logger = logging.getLogger(__name__)
 GDD_BASE_TEMP_C = 10.0
@@ -79,6 +97,7 @@ def _season_rainfall_mm(lat: float, lng: float, polygon: Optional[dict], year: i
         return None
 
 def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None, current_year: Optional[int] = None, history_years: int = 4) -> Dict[str, Any]:
+    start_time = time.monotonic()
     current_year=current_year or _latest_completed_year()
     if current_year>=datetime.utcnow().year: current_year=datetime.utcnow().year-1
 
@@ -89,7 +108,7 @@ def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None, current_ye
     try:
         used_year = current_year
         current_val = _season_rainfall_mm(lat, lng, polygon, used_year)
-        if current_val is None:
+        if current_val is None and time.monotonic() - start_time < SPI_TIME_BUDGET_S:
             used_year = current_year - 1
             current_val = _season_rainfall_mm(lat, lng, polygon, used_year)
     except Exception as exc:
@@ -99,14 +118,22 @@ def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None, current_ye
         return {"available":False,"reason":f"No completed CHIRPS v3 rainfall data for {current_year} or {current_year-1}."}
 
     # History: search backward from the year before the one actually used
-    # above, collecting valid years until `history_years` are found, or
-    # the search-back cap is hit. This tolerates 1-2 sporadic per-year
-    # gaps instead of requiring an exact contiguous block.
+    # above, collecting valid years until `history_years` are found, the
+    # search-back cap is hit, or the time budget runs out — whichever
+    # comes first. This tolerates 1-2 sporadic per-year gaps instead of
+    # requiring an exact contiguous block, without letting a sustained
+    # outage turn this into a multi-minute call (see SPI_TIME_BUDGET_S).
     history = []
     search_back = history_years + SPI_HISTORY_SEARCH_SLACK
+    years_checked = 0
+    time_budget_hit = False
     try:
         for y in range(used_year - 1, used_year - 1 - search_back, -1):
+            if time.monotonic() - start_time >= SPI_TIME_BUDGET_S:
+                time_budget_hit = True
+                break
             v = _season_rainfall_mm(lat, lng, polygon, y)
+            years_checked += 1
             if v is not None:
                 history.append(v)
             if len(history) >= history_years:
@@ -114,7 +141,10 @@ def fetch_spi(lat: float, lng: float, polygon: Optional[dict] = None, current_ye
     except Exception as exc:
         logger.exception("Year-by-year SPI history fetch failed")
         return {"available":False,"reason":f"Rainfall history fetch failed: {type(exc).__name__}"}
-    if len(history)<4:return {"available":False,"reason":f"Insufficient completed rainfall history for SPI (found {len(history)} usable year(s) out of the last {search_back} searched)."}
+    if len(history)<4:
+        reason = f"Insufficient completed rainfall history for SPI (found {len(history)} usable year(s) out of {years_checked} checked"
+        reason += f", stopped early after {SPI_TIME_BUDGET_S:.0f}s time budget)." if time_budget_hit else f" out of {search_back} planned)."
+        return {"available":False,"reason":reason}
     current=current_val; mean=sum(history)/len(history); stddev=math.sqrt(sum((x-mean)**2 for x in history)/len(history))
     if stddev==0:return {"available":False,"reason":"Zero variance in rainfall history — cannot compute SPI."}
     spi=round((current-mean)/stddev,2)

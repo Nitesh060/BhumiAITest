@@ -139,7 +139,7 @@ def _filter_growing_season(collection: ee.ImageCollection) -> ee.ImageCollection
     return _filter_season(collection)
 
 
-def _getinfo_with_backoff(ee_computed_object, max_attempts: int = 3, base_delay_s: float = 1.5):
+def _getinfo_with_backoff(ee_computed_object, max_attempts: int = 2, base_delay_s: float = 1.0):
     """Call ``.getInfo()`` with a couple of retries + short backoff.
 
     Without this, a single dropped/rate-limited request ANYWHERE in a

@@ -294,6 +294,11 @@ def _fetch_rainfall_detailed(lat: float, lng: float, polygon: Optional[dict]) ->
     """Same as ``_fetch_rainfall`` but also returns a human-readable reason
     string when the value comes back None, so callers (app.py) can surface
     *why* a parameter was unavailable instead of silently dropping it.
+
+    NOTE: fetch_farm_data() no longer calls this directly for the main
+    FarmScore Rainfall parameter — see _seasonal_rainfall_from_monthly()
+    below for why. This is kept for test_data_fetching.py and any other
+    caller that wants a single-shot detailed fetch.
     """
     # CHIRPS's native grid is ~5.5km/pixel. filterBounds() only needs the
     # bare point/polygon to find overlapping tiles, but the reduceRegion()
@@ -333,6 +338,31 @@ def _fetch_rainfall_detailed(lat: float, lng: float, polygon: Optional[dict]) ->
 def _fetch_rainfall(lat: float, lng: float, polygon: Optional[dict]) -> Optional[float]:
     value, _ = _fetch_rainfall_detailed(lat, lng, polygon)
     return value
+
+
+def _seasonal_rainfall_from_monthly(rainfall_monthly: list) -> Tuple[Optional[float], Optional[str]]:
+    """Derives the single seasonal rainfall value (FarmScore's Rainfall
+    parameter) from the already-computed monthly breakdown (the PDF
+    report's monthly chart), instead of running a SEPARATE, heavier
+    Earth Engine call over the full 5-month window.
+
+    This is the fix for a real production bug: _fetch_rainfall_detailed
+    (above) and _fetch_rainfall_monthly hit the exact same CHIRPS data
+    for the exact same Jun-Oct window, but the old detailed fetch
+    aggregated all ~153 days in ONE reduceRegion call while the monthly
+    fetch does 5 separate ~30-day aggregations. Under this service's
+    resource constraints, the wider single aggregation was consistently
+    failing while the 5 narrower ones kept succeeding — which is why
+    the PDF's monthly rainfall chart worked but the score's Rainfall
+    parameter never did, at any location. Deriving one from the other
+    fixes the mismatch by construction (both are now views of the same
+    computation) and is strictly cheaper — one set of Earth Engine
+    calls instead of two overlapping ones.
+    """
+    valid = [m["mm_per_day"] for m in (rainfall_monthly or []) if m.get("mm_per_day") is not None]
+    if not valid:
+        return None, "No individual month in the Jun-Oct window returned a usable CHIRPS value."
+    return round(sum(valid) / len(valid), 4), None
 
 
 def _fetch_rainfall_monthly(lat: float, lng: float, polygon: Optional[dict]) -> list:
@@ -482,15 +512,14 @@ def fetch_farm_data(lat: float, lng: float, polygon: Optional[dict] = None) -> D
         return cached.copy()
     with ThreadPoolExecutor(max_workers=4) as pool:
         f_idx = pool.submit(_fetch_s2_indices, lat, lng, polygon)
-        f_rain = pool.submit(_fetch_rainfall_detailed, lat, lng, polygon)
         f_month = pool.submit(_fetch_rainfall_monthly, lat, lng, polygon)
         f_lst = pool.submit(_fetch_lst, lat, lng, polygon)
         f_air = pool.submit(_fetch_air_temperature, lat, lng, polygon)
         f_soil = pool.submit(_fetch_deep_soil_moisture, lat, lng, polygon)
         f_meta = pool.submit(_fetch_s2_meta, lat, lng, polygon)
         ndvi, ndmi, ndwi = f_idx.result()
-        rainfall, rainfall_reason = f_rain.result()
         rainfall_monthly = f_month.result()
+        rainfall, rainfall_reason = _seasonal_rainfall_from_monthly(rainfall_monthly)
         lst = f_lst.result()
         air_temperature = f_air.result()
         deep_soil_moisture = f_soil.result()

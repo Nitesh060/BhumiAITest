@@ -10,8 +10,10 @@ from __future__ import annotations
 import hashlib
 import html
 import io
-from typing import Any, Dict
+import logging
+from typing import Any, Dict, List, Optional, Sequence
 
+import requests
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
@@ -24,9 +26,14 @@ from reportlab.platypus import (
     Table,
     TableStyle,
     PageBreak,
+    Image,
 )
+from reportlab.graphics.shapes import Drawing
+from reportlab.graphics.charts.linecharts import HorizontalLineChart
 
 from glossary import GLOSSARY_TERMS
+
+logger = logging.getLogger(__name__)
 
 PAGE_W = 174 * mm
 BLUE = colors.HexColor("#2F6FDB")
@@ -143,6 +150,61 @@ def _table(rows, widths, s, header=True):
     return t
 
 
+def _line_chart(points: Sequence[float], labels: Sequence[str], width_mm_val: float, height_mm_val: float, line_color) -> Optional[Drawing]:
+    """A minimal reportlab-native line chart — no matplotlib, no temp
+    files, same "no external rendering dependency" constraint as the
+    ASCII score bar elsewhere in this module. Returns None (never
+    raises) if there are fewer than 2 usable points to plot.
+    """
+    try:
+        width, height = width_mm_val * mm, height_mm_val * mm
+        d = Drawing(width, height)
+        chart = HorizontalLineChart()
+        chart.x = 26
+        chart.y = 16
+        chart.width = width - 34
+        chart.height = height - 28
+        chart.data = [list(points)]
+        chart.categoryAxis.categoryNames = list(labels)
+        chart.categoryAxis.labels.fontSize = 5.2
+        lo, hi = min(points), max(points)
+        pad = (hi - lo) * 0.15 or max(abs(hi), 1) * 0.1
+        chart.valueAxis.valueMin = lo - pad
+        chart.valueAxis.valueMax = hi + pad
+        chart.valueAxis.labels.fontSize = 5.2
+        chart.lines[0].strokeColor = line_color
+        chart.lines[0].strokeWidth = 1.3
+        d.add(chart)
+        return d
+    except Exception:
+        logger.exception("Line chart rendering failed (non-fatal)")
+        return None
+
+
+def _safe_image(url: Optional[str], width_mm_val: float, timeout: float = 8.0) -> Optional[Image]:
+    """Downloads a remote image (the satellite thumbnail URL) and
+    returns a reportlab Image flowable sized to `width_mm_val` wide,
+    preserving aspect ratio — or None on ANY failure (missing url,
+    network error, bad content, timeout). The PDF must render exactly
+    the same with or without this succeeding.
+    """
+    if not url:
+        return None
+    try:
+        resp = requests.get(url, timeout=timeout)
+        resp.raise_for_status()
+        buf = io.BytesIO(resp.content)
+        img = Image(buf)
+        width = width_mm_val * mm
+        aspect = img.imageHeight / img.imageWidth if img.imageWidth else 1
+        img.drawWidth = width
+        img.drawHeight = width * aspect
+        return img
+    except Exception:
+        logger.exception("Satellite thumbnail download/embed failed (non-fatal)")
+        return None
+
+
 def _water_body_label(water: Dict[str, Any]) -> str:
     """nearest_water_body only ever returns water_present / water_pixels_within_2km
     (a satellite presence/extent signal, by design — see enrichment_service.py's
@@ -159,6 +221,70 @@ def _water_body_label(water: Dict[str, Any]) -> str:
     if water.get("water_present") is False:
         return "No surface water detected within 2 km"
     return "Not available"
+
+
+def _score_breakdown_section(seasonal: Optional[Dict[str, Any]], s) -> list:
+    """Renders the Base + Kharif + Rabi breakdown — Bhumi's own version
+    of SatSource's "Factors Contributing Towards SatScore" panel. Not
+    the same computation or thresholds as any other product; see
+    seasonal_score_service.py's module docstring for what this is and
+    isn't. Degrades to a clear "not available" note rather than hiding
+    the whole section if the underlying signals are missing.
+    """
+    story = _section("Bhumi Seasonal Score", s)
+    if not seasonal or not seasonal.get("available"):
+        reason = (seasonal or {}).get("reason", "Insufficient irrigation, cropping-intensity, or historical NDVI signal for this location.")
+        story.append(Paragraph(f"Not available — {_esc(reason)}", s["Small"]))
+        story.append(Spacer(1, 6))
+        return story
+
+    overall = seasonal["overall_score"]
+    category = seasonal["category"]
+    risk = seasonal["risk_rating"]
+    filled = max(1, min(20, round(overall / 1000 * 20)))
+    bar = Table([["■" * filled + "□" * (20 - filled)]], colWidths=[75 * mm], rowHeights=[9 * mm])
+    bar.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 13),
+        ("TEXTCOLOR", (0, 0), (-1, -1), GREEN if category in ("Good", "Very Good", "Excellent") else (ORANGE if category == "Fair" else RED)),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
+    ]))
+    summary = [
+        [bar, Paragraph(f"<b>{overall}/1000</b><br/>{_esc(category)} - {_esc(risk)} risk", s["Body8"])],
+        [Paragraph("Base + Kharif + Rabi composite (see method note below)", s["Small"]), ""],
+    ]
+    st = Table(summary, colWidths=[100 * mm, 74 * mm])
+    st.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("SPAN", (0, 1), (1, 1)),
+    ]))
+    story += [st, Spacer(1, 6)]
+
+    def _factor_row(label, comp):
+        if not comp or not comp.get("data_available"):
+            return [label, "Not available", "—"]
+        return [label, f"{comp['grade']} ({comp['score']}/{comp['max_score']})", ""]
+
+    base, kharif, rabi = seasonal["base"], seasonal["kharif"], seasonal["rabi"]
+    factor_rows = [
+        ["FACTOR", "SCORE", "DETAIL"],
+        [*_factor_row("Base Score", base)[:2], f"{base.get('irrigation_condition', '—')}, {base.get('cropping_intensity', '—')}" if base.get("data_available") else "—"],
+        [*_factor_row("Average Kharif Score", kharif)[:2], f"{kharif.get('years_used', 0)} season(s) used" if kharif.get("data_available") else "—"],
+        [*_factor_row("Average Rabi Score", rabi)[:2], f"{rabi.get('years_used', 0)} season(s) used" if rabi.get("data_available") else "—"],
+    ]
+    story += [_table(factor_rows, [45 * mm, 55 * mm, 74 * mm], s), Spacer(1, 4)]
+    story.append(Paragraph(
+        "Bhumi Seasonal Score is an independent, formula-based proxy built from this app's own satellite signals "
+        "(irrigation + cropping intensity for Base; multi-year Kharif/Rabi NDVI for the seasonal scores). "
+        "It is NOT validated against real harvested-yield ground truth and is distinct from the main FarmScore above, "
+        "which measures current land-condition suitability rather than multi-year seasonal performance.",
+        s["Tiny"]))
+    story.append(Spacer(1, 6))
+    return story
 
 
 def _score_page(data, s):
@@ -219,6 +345,8 @@ def _score_page(data, s):
     # LayoutError and produced the HTTP 500 seen by the frontend.
     story += [_table(details, [9 * mm, 38 * mm, 25 * mm, 26 * mm, 28 * mm, 28 * mm, 20 * mm], s), Spacer(1, 7)]
 
+    story += _score_breakdown_section(enrichment.get("seasonal_score"), s)
+
     story += _section("FarmScore & Parameter Evidence", s)
     sources = sorted({str(c.get("source")) for c in components.values() if isinstance(c, dict) and c.get("source")})
     used = sum(1 for c in components.values() if isinstance(c, dict) and c.get("sub_score") is not None)
@@ -258,17 +386,25 @@ def _score_page(data, s):
 
     story += _section("Cropping History", s)
     history = enrichment.get("cropping_history") or {}
-    hrows = [["SEASON", "CROP SIGNAL", "NDVI", "STATUS"]]
+    identified = enrichment.get("crop_history_identified") or {}
+    identified_by_year = {y.get("year"): y for y in identified.get("years") or []}
+    hrows = [["SEASON", "CROP (SATELLITE ESTIMATE)", "NDVI", "STATUS"]]
     for year in history.get("years") or []:
+        year_num = year.get("year")
+        id_year = identified_by_year.get(year_num, {})
         for key, label in (("kharif", "Kharif"), ("rabi", "Rabi")):
             item = year.get(key) or {}
             if item.get("ndvi") is None and not item.get("cropped"):
                 continue
-            hrows.append([f"{label} ({year.get('year', '—')})", "Not identified", item.get("ndvi", "—"), "Cropped signal" if item.get("cropped") else "Fallow / no signal"])
+            id_season = id_year.get(key) or {}
+            crop_name = id_season.get("identified_crop")
+            confidence = id_season.get("confidence")
+            crop_display = f"{crop_name} ({confidence} confidence)" if crop_name else "Not identified"
+            hrows.append([f"{label} ({year_num or '—'})", crop_display, item.get("ndvi", "—"), "Cropped signal" if item.get("cropped") else "Fallow / no signal"])
     if len(hrows) == 1:
         hrows.append(["No historical signal", "—", "—", "—"])
-    story += [_table(hrows, [38 * mm, 52 * mm, 30 * mm, 54 * mm], s), Spacer(1, 3)]
-    story.append(Paragraph("Season-level satellite signal is not crop-species ground truth. Historical price and measured yield are not fabricated when unavailable.", s["Tiny"]))
+    story += [_table(hrows, [38 * mm, 58 * mm, 26 * mm, 52 * mm], s), Spacer(1, 3)]
+    story.append(Paragraph("Crop names are a satellite-signal heuristic (NDVI shape + flood signature), not a trained crop-species classifier or ground-truth record — see the Glossary. Historical price and measured yield are not fabricated when unavailable.", s["Tiny"]))
     story.append(PageBreak())
     return story
 
@@ -277,6 +413,19 @@ def _location_page(data, s):
     e = data.get("enrichment") or {}
     coords = data.get("coordinates") or {}
     story = _section("Farm Location", s)
+
+    thumb = data.get("satellite_thumbnail") or {}
+    if thumb.get("available") and thumb.get("url"):
+        img = _safe_image(thumb["url"], 174)
+        if img:
+            story += [img, Spacer(1, 3)]
+            caption = f"Sentinel-2 imagery" + (f", {thumb['scene_date']}" if thumb.get("scene_date") else "") + " — farm boundary shown in red."
+            story += [Paragraph(caption, s["Tiny"]), Spacer(1, 6)]
+        else:
+            story += [Paragraph("Satellite image could not be loaded for this report.", s["Small"]), Spacer(1, 6)]
+    elif thumb.get("reason"):
+        story += [Paragraph(f"Satellite image unavailable: {_esc(thumb['reason'])}", s["Small"]), Spacer(1, 6)]
+
     rows = [
         ["ITEM", "VALUE"],
         ["Farm Centroid", f"{coords.get('lat', '—')} N, {coords.get('lng', '—')} E"],
@@ -310,16 +459,44 @@ def _water_page(data, s):
                 rows.append([item.get("month") or item.get("label") or item.get("year") or "—", item.get("mm_per_day") or item.get("rainfall") or item.get("rainfall_mm") or item.get("value") or "—", "mm/day"])
     if len(rows) == 1:
         rows.append(["No trend data", "—", "—"])
-    story += [_table(rows, [55 * mm, 59 * mm, 60 * mm], s), Spacer(1, 7)]
+    story += [Paragraph("In-Season Monthly Rainfall", s["Section"]), _table(rows, [55 * mm, 59 * mm, 60 * mm], s), Spacer(1, 7)]
+
     water = e.get("nearest_water_body") or {}
-    gw = data.get("groundwater_trend") or e.get("groundwater_trend") or {}
+    gw = data.get("groundwater_trend") or e.get("groundwater_trend") or []
+    gw_points = [(g.get("year"), g.get("deep_soil_moisture")) for g in gw if isinstance(g, dict) and g.get("deep_soil_moisture") is not None]
+    story.append(Paragraph("Groundwater Trend (Deep Soil Moisture Proxy, mm equivalent)", s["Section"]))
+    if len(gw_points) >= 2:
+        chart = _line_chart([v for _, v in gw_points], [str(y) for y, _ in gw_points], 174, 48, BLUE)
+        if chart:
+            story += [chart, Spacer(1, 4)]
+        else:
+            story.append(Paragraph("Chart could not be rendered — see raw values below.", s["Small"]))
+    else:
+        story.append(Paragraph("Not enough completed years of data to plot a trend for this location.", s["Small"]))
+    story.append(Spacer(1, 6))
+
+    rainfall_trend = data.get("rainfall_trend") or {}
+    yearly = rainfall_trend.get("yearly") or []
+    rain_points = [(y.get("year"), y.get("total_rainfall_mm")) for y in yearly if isinstance(y, dict) and y.get("total_rainfall_mm") is not None]
+    story.append(Paragraph("Rainfall Trend (mm/year)", s["Section"]))
+    if len(rain_points) >= 2:
+        chart = _line_chart([v for _, v in rain_points], [str(y) for y, _ in rain_points], 174, 48, GREEN)
+        if chart:
+            story += [chart, Spacer(1, 4)]
+        else:
+            story.append(Paragraph("Chart could not be rendered — see raw values below.", s["Small"]))
+    else:
+        story.append(Paragraph("Not enough completed years of data to plot a trend for this location.", s["Small"]))
+    story.append(Spacer(1, 6))
+
     summary = [
         ["ITEM", "VALUE"],
         ["Nearest Water Body", _water_body_label(water)],
-        ["Groundwater Trend", "Available" if gw else "Not available"],
+        ["Groundwater Data Points", f"{len(gw_points)} year(s)" if gw_points else "Not available"],
+        ["Rainfall Data Points", f"{len(rain_points)} year(s)" if rain_points else "Not available"],
     ]
     story += [_table(summary, [60 * mm, 114 * mm], s), Spacer(1, 4)]
-    story.append(Paragraph("Water-related values are derived from the datasets already used by the FarmScore pipeline.", s["Tiny"]))
+    story.append(Paragraph("Water-related values are derived from the datasets already used by the FarmScore pipeline. Groundwater is a deep-soil-moisture satellite PROXY, not a measured water-table depth.", s["Tiny"]))
     story.append(PageBreak())
     return story
 

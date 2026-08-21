@@ -26,12 +26,12 @@ jobs:
           python-version: "3.11"
 
       - name: Install test runner
-        run: pip install pytest
+        run: pip install pytest earthengine-api
 
       - name: Compile Python files
-        run: python -m compileall -q comprehensive_score_service.py scoring.py tests
+        run: python -m compileall -q comprehensive_score_service.py scoring.py earth_engine_service.py weather_indices_service.py tests
 
       - name: Run unit tests
         env:
           PYTHONPATH: .
-        run: python -m pytest -q tests/test_scoring.py
+        run: python -m pytest -q tests/

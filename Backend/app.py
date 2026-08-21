@@ -102,7 +102,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+
+# Restricted to a real allowlist (was `origins: "*"`, letting any site on the
+# internet trigger the satellite/Gemini-backed endpoints below from a
+# browser). ALLOWED_ORIGIN accepts one or more comma-separated origins — the
+# same env var wsgi.py's security middleware already reads, so there is one
+# source of truth instead of two independently-configured CORS policies.
+# Falls back to the known production frontend origin (not "*") if unset, so
+# a missing env var narrows access instead of silently opening it wide.
+_allowed_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGIN", "").split(",") if o.strip()]
+if not _allowed_origins:
+    _allowed_origins = ["https://bhumiaitest-1.onrender.com"]
+    logger.warning(
+        "ALLOWED_ORIGIN not set — defaulting CORS to %s. Set ALLOWED_ORIGIN "
+        "(comma-separated for multiple) to override.", _allowed_origins[0],
+    )
+CORS(app, resources={r"/*": {"origins": _allowed_origins}})
 
 try:
     db_module.init_db()

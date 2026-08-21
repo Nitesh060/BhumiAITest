@@ -59,11 +59,13 @@ def initialise_earth_engine() -> None:
         if _ee_initialised:
             return
         credentials_json = os.getenv("GOOGLE_CREDENTIALS")
+        is_tempfile = False
         if credentials_json:
             import tempfile
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tmp:
                 tmp.write(credentials_json)
                 key_path = tmp.name
+            is_tempfile = True
         elif os.getenv("GEE_SERVICE_ACCOUNT") and os.getenv("GEE_PRIVATE_KEY"):
             import tempfile
             key_data = {
@@ -75,14 +77,27 @@ def initialise_earth_engine() -> None:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tmp:
                 json.dump(key_data, tmp)
                 key_path = tmp.name
+            is_tempfile = True
         else:
             key_path = _resolve_credentials_path()
-        with open(key_path, "r", encoding="utf-8") as fh:
-            key_data = json.load(fh)
-        service_account = key_data.get("client_email")
-        if not service_account:
-            raise ValueError("client_email missing from service-account key file")
-        ee.Initialize(ee.ServiceAccountCredentials(service_account, key_path))
+        try:
+            with open(key_path, "r", encoding="utf-8") as fh:
+                key_data = json.load(fh)
+            service_account = key_data.get("client_email")
+            if not service_account:
+                raise ValueError("client_email missing from service-account key file")
+            # ServiceAccountCredentials reads the key file into memory during
+            # construction, not lazily on each Earth Engine call — so it's
+            # safe to delete the tempfile once this line returns. Without
+            # this, the private key sat on disk in /tmp for the container's
+            # entire lifetime (only 0600-protected, not actually removed).
+            ee.Initialize(ee.ServiceAccountCredentials(service_account, key_path))
+        finally:
+            if is_tempfile:
+                try:
+                    os.remove(key_path)
+                except OSError:
+                    logger.warning("Could not remove temporary GEE credentials file: %s", key_path)
         _ee_initialised = True
 
 

@@ -16,8 +16,8 @@ function breakdownTable(counts, colLabel) {
     if (!entries.length) return `<p class="empty-hint">No data yet.</p>`;
     return `
         <table class="report-table">
-            <thead><tr><th>${colLabel}</th><th>Count</th></tr></thead>
-            <tbody>${entries.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</tbody>
+            <thead><tr><th>${escapeHTML(colLabel)}</th><th>Count</th></tr></thead>
+            <tbody>${entries.map(([k, v]) => `<tr><td>${escapeHTML(k)}</td><td>${v}</td></tr>`).join("")}</tbody>
         </table>`;
 }
 
@@ -57,10 +57,10 @@ async function loadUsers() {
         list.innerHTML = data.users.map(u => `
             <div class="fm-list-item">
                 <div class="fm-list-item-title">
-                    ${u.name} <span style="font-weight:400;color:var(--text-muted);">(${u.role})</span>
-                    ${u.id !== currentUser.id ? `<span style="float:right;cursor:pointer;" data-id="${u.id}">🗑️</span>` : ""}
+                    ${escapeHTML(u.name)} <span style="font-weight:400;color:var(--text-muted);">(${escapeHTML(u.role)})</span>
+                    ${u.id !== currentUser.id ? `<span style="float:right;cursor:pointer;" data-id="${escapeHTML(u.id)}">🗑️</span>` : ""}
                 </div>
-                <div class="fm-list-item-sub">@${u.username} · joined ${new Date(u.created_at).toLocaleDateString()}</div>
+                <div class="fm-list-item-sub">@${escapeHTML(u.username)} · joined ${new Date(u.created_at).toLocaleDateString()}</div>
             </div>`).join("");
 
         list.querySelectorAll("span[data-id]").forEach(el => {

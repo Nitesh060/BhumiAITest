@@ -160,9 +160,9 @@ async function loadFarmers(search = "") {
         return;
     }
     list.innerHTML = farmers.map(f => `
-        <div class="fm-list-item ${f.id === selectedFarmerId ? "selected" : ""}" data-id="${f.id}">
-            <div class="fm-list-item-title">${f.name}</div>
-            <div class="fm-list-item-sub">${[f.village, f.district, f.state].filter(Boolean).join(", ") || "—"} · ${f.farm_count} farm(s)</div>
+        <div class="fm-list-item ${f.id === selectedFarmerId ? "selected" : ""}" data-id="${escapeHTML(f.id)}">
+            <div class="fm-list-item-title">${escapeHTML(f.name)}</div>
+            <div class="fm-list-item-sub">${escapeHTML([f.village, f.district, f.state].filter(Boolean).join(", ") || "—")} · ${f.farm_count} farm(s)</div>
         </div>`).join("");
 
     list.querySelectorAll(".fm-list-item").forEach(el => {
@@ -212,9 +212,9 @@ async function loadFarms(farmerId) {
     } else {
         list.innerHTML = farms.map(f => `
             <div class="fm-list-item">
-                <div class="fm-list-item-title">${f.label || "Unlabeled farm"} <span style="float:right;">🗑️</span></div>
+                <div class="fm-list-item-title">${escapeHTML(f.label || "Unlabeled farm")} <span style="float:right;">🗑️</span></div>
                 <div class="fm-list-item-sub">
-                    ${f.lat.toFixed(4)}°, ${f.lng.toFixed(4)}° · ${f.area_ha ? f.area_ha.toFixed(2) + " ha" : "area unknown"} · ${f.survey_method || "—"}
+                    ${f.lat.toFixed(4)}°, ${f.lng.toFixed(4)}° · ${f.area_ha ? f.area_ha.toFixed(2) + " ha" : "area unknown"} · ${escapeHTML(f.survey_method || "—")}
                 </div>
             </div>`).join("");
 

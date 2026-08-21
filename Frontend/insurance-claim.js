@@ -13,11 +13,15 @@ document.getElementById("use-last-farm-btn").addEventListener("click", () => {
 });
 
 function row(icon, label, value) {
+    // icon is always a hardcoded emoji literal from call sites in this
+    // file, never user data — label/value can carry farmer-entered text
+    // (e.g. declared_crop, the claimant's own free-text crop name) and
+    // need escaping.
     return `
         <div class="enrichment-row">
             <span class="er-icon">${icon}</span>
-            <span class="er-label">${label}</span>
-            <span class="er-value">${value}</span>
+            <span class="er-label">${escapeHTML(label)}</span>
+            <span class="er-value">${escapeHTML(value)}</span>
         </div>`;
 }
 
@@ -67,27 +71,27 @@ document.getElementById("assess-claim-btn").addEventListener("click", async () =
             row("🛰️", "Satellite-Measured Area", `${ac.measured_area_ha} ha`),
             row("📊", "Discrepancy", `${ac.discrepancy_pct}%`),
             row(ac.match ? "✅" : "⚠️", "Match", ac.match ? "Yes" : (ac.flag || "No")),
-        ].join("") : `<p class="empty-hint">${ac.reason}</p>`;
+        ].join("") : `<p class="empty-hint">${escapeHTML(ac.reason)}</p>`;
 
         const cc = data.crop_check;
         document.getElementById("crop-list").innerHTML = cc.available ? [
             row("📝", "Declared Crop", cc.declared_crop),
             row("🛰️", "Satellite-Identified Crop", cc.identified_crop),
             row(cc.match ? "✅" : "⚠️", "Match", cc.match ? "Yes" : (cc.flag || "No")),
-        ].join("") : `<p class="empty-hint">${cc.reason}</p>`;
+        ].join("") : `<p class="empty-hint">${escapeHTML(cc.reason)}</p>`;
 
         const ls = data.loss_estimate;
         document.getElementById("loss-list").innerHTML = ls.available ? [
             row("📈", "Before NDVI", `${ls.before_ndvi} (${ls.before_scene_date})`),
             row("📉", "After NDVI", `${ls.after_ndvi} (${ls.after_scene_date})`),
             row("💥", "Estimated Loss", `${ls.estimated_loss_pct}% — ${ls.severity}`),
-        ].join("") : `<p class="empty-hint">${ls.reason}</p>`;
+        ].join("") : `<p class="empty-hint">${escapeHTML(ls.reason)}</p>`;
 
         const fr = data.fraud_signals;
         document.getElementById("fraud-list").innerHTML = [
             row("🚩", "Fraud Risk Level", fr.fraud_risk_level),
             row("📊", "Fraud Risk Score", `${fr.fraud_risk_score}/100`),
-        ].join("") + `<p class="empty-hint" style="margin-top:6px;">${fr.flags.join("; ")}</p>`;
+        ].join("") + `<p class="empty-hint" style="margin-top:6px;">${escapeHTML(fr.flags.join("; "))}</p>`;
 
         document.getElementById("disclaimer-text").textContent = data.disclaimer;
     } catch (err) {

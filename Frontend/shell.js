@@ -9,6 +9,21 @@
     if (saved === "light") document.documentElement.setAttribute("data-theme", "light");
 })();
 
+/* Shared HTML-escaping helper — report.js and crop-intelligence.js each
+ * already defined their own identical copy of this; every OTHER page
+ * that builds HTML strings from farmer-entered, admin-entered, or
+ * AI-generated text via innerHTML (farm-management.js, dashboard-
+ * overview.js, insurance-claim.js, app.js) had none at all, which is
+ * how a farmer/farm/user name or an AI diagnosis response could carry
+ * a stored XSS payload straight into another user's (including an
+ * admin's) browser. Defined once here, in the file every page already
+ * loads first, so there's one place to get this right instead of N. */
+function escapeHTML(value) {
+    return String(value ?? "—").replace(/[&<>'"]/g, ch => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"
+    }[ch]));
+}
+
 window.FARMSCORE_API_URL = window.FARMSCORE_API_URL || "https://bhumiaitest.onrender.com";
 const BHUMI_API_BASE_URL = window.FARMSCORE_API_URL;
 

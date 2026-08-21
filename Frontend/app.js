@@ -1368,34 +1368,38 @@ async function submitDiagnosis() {
 
         if (!res.ok) throw new Error(data.error || "Diagnosis failed");
 
+        // Every field below comes from Gemini's response to an uploaded
+        // photo — a known prompt-injection surface (crafted image text
+        // coaxing the model into echoing HTML/script). None of it is
+        // trusted as safe markup.
         if (data.is_plant === false) {
             diagnoseResult.innerHTML = `
-                <p class="diag-not-plant">This doesn't look like a plant/crop photo. ${data.diagnosis || ""}</p>`;
+                <p class="diag-not-plant">This doesn't look like a plant/crop photo. ${escapeHTML(data.diagnosis || "")}</p>`;
         } else {
-            const symptoms = (data.symptoms_observed || []).map(s => `<li>${s}</li>`).join("");
-            const remedies = (data.remedy_steps || []).map(s => `<li>${s}</li>`).join("");
+            const symptoms = (data.symptoms_observed || []).map(s => `<li>${escapeHTML(s)}</li>`).join("");
+            const remedies = (data.remedy_steps || []).map(s => `<li>${escapeHTML(s)}</li>`).join("");
 
             diagnoseResult.innerHTML = `
                 <div class="diag-row">
                     <span class="diag-label">Crop (guess)</span>
-                    <span>${data.crop_guess || "Unclear"}</span>
+                    <span>${escapeHTML(data.crop_guess || "Unclear")}</span>
                 </div>
                 <div class="diag-row">
                     <span class="diag-label">Diagnosis</span>
-                    <span class="diag-diagnosis">${data.diagnosis || "Unclear from photo"}</span>
+                    <span class="diag-diagnosis">${escapeHTML(data.diagnosis || "Unclear from photo")}</span>
                 </div>
                 <div class="diag-row">
                     <span class="diag-label">Confidence</span>
-                    <span style="color:${confidenceColor(data.confidence)}">${data.confidence || "Low"}</span>
+                    <span style="color:${confidenceColor(data.confidence)}">${escapeHTML(data.confidence || "Low")}</span>
                 </div>
                 ${symptoms ? `<div class="diag-section"><strong>Symptoms observed</strong><ul>${symptoms}</ul></div>` : ""}
                 ${remedies ? `<div class="diag-section"><strong>Suggested next steps</strong><ul>${remedies}</ul></div>` : ""}
-                <p class="diag-caveat">⚠ ${data.caveat || "This is an AI estimate, not a substitute for expert advice."}</p>`;
+                <p class="diag-caveat">⚠ ${escapeHTML(data.caveat || "This is an AI estimate, not a substitute for expert advice.")}</p>`;
         }
 
         diagnoseResult.style.display = "block";
     } catch (err) {
-        diagnoseResult.innerHTML = `<p class="diag-not-plant">Couldn't diagnose the photo: ${err.message}</p>`;
+        diagnoseResult.innerHTML = `<p class="diag-not-plant">Couldn't diagnose the photo: ${escapeHTML(err.message)}</p>`;
         diagnoseResult.style.display = "block";
     } finally {
         diagnoseSubmitBtn.disabled = false;
@@ -1478,10 +1482,13 @@ function renderSpectralResult(data) {
 
     const rec = data.recommendations || {};
     const recWrap = document.getElementById("spectral-recommendations");
+    // These three are Gemini-generated advisory text (see
+    // gemini_service.generate_spectral_insight) — same untrusted-output
+    // class as the /diagnose fields above, escaped for the same reason.
     recWrap.innerHTML = `
-        <div class="spectral-rec-row"><span class="spectral-rec-label">💧 Irrigation</span><p>${rec.irrigation_advice || "—"}</p></div>
-        <div class="spectral-rec-row"><span class="spectral-rec-label">🧪 Fertilization</span><p>${rec.fertilization_advice || "—"}</p></div>
-        <div class="spectral-rec-row"><span class="spectral-rec-label">🌾 Crop Management</span><p>${rec.crop_management_advice || "—"}</p></div>`;
+        <div class="spectral-rec-row"><span class="spectral-rec-label">💧 Irrigation</span><p>${escapeHTML(rec.irrigation_advice || "—")}</p></div>
+        <div class="spectral-rec-row"><span class="spectral-rec-label">🧪 Fertilization</span><p>${escapeHTML(rec.fertilization_advice || "—")}</p></div>
+        <div class="spectral-rec-row"><span class="spectral-rec-label">🌾 Crop Management</span><p>${escapeHTML(rec.crop_management_advice || "—")}</p></div>`;
 }
 
 async function fetchSpectralIntelligence(lat, lng) {

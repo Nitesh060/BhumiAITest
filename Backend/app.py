@@ -1570,6 +1570,26 @@ def auth_me_route():
     return jsonify({"user": request.user}), 200
 
 
+@app.route("/auth/logout", methods=["POST"])
+@auth_service.require_auth()
+def auth_logout_route():
+    """Bumps this user's token_version, immediately invalidating THIS
+    token and every other still-unexpired token issued to them —
+    previously there was no way to invalidate a token before its
+    natural expiry at all (see auth_service.bump_token_version).
+    """
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    session = db_module.get_session()
+    try:
+        user = session.query(auth_service.User).filter(auth_service.User.id == request.user.get("user_id")).first()
+        if user:
+            auth_service.bump_token_version(session, user)
+        return jsonify({"message": "Logged out."}), 200
+    finally:
+        session.close()
+
+
 @app.route("/admin/users", methods=["GET"])
 @auth_service.require_auth(["admin"])
 def admin_list_users_route():

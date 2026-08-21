@@ -39,6 +39,18 @@ class User(Base):
     name = Column(String, nullable=False)
     role = Column(String, nullable=False, default="field_officer")  # "admin" | "field_officer"
     created_at = Column(DateTime, default=_now)
+    # Bumped on logout (or when an admin deletes this user) to invalidate
+    # every JWT issued before that point — a token's own embedded
+    # token_version is checked against this on every authenticated
+    # request (see auth_service.require_auth). Without this, there was
+    # no way to invalidate a token before its natural expiry: deleting a
+    # user didn't stop their existing, still-unexpired token from
+    # continuing to authenticate successfully, and there was no logout
+    # endpoint at all. server_default="0" matters here, not just
+    # default=0 — it's what lets the additive migration in db.py backfill
+    # this column on a live table that already has rows, without an
+    # explicit backfill pass.
+    token_version = Column(Integer, nullable=False, default=0, server_default="0")
 
     def to_dict(self):
         return {

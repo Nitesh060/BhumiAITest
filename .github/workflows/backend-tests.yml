@@ -29,7 +29,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Compile Python files
-        run: python -m compileall -q app.py comprehensive_score_service.py scoring.py earth_engine_service.py weather_indices_service.py seasonal_data_service.py farm_management_service.py pdf_report.py tests
+        run: python -m compileall -q .
 
       - name: Run unit tests
         env:

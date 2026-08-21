@@ -19,6 +19,7 @@ Reuses:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import ee
@@ -168,8 +169,8 @@ def identify_crop_history(lat: float, lng: float, polygon: Optional[dict] = None
 def _check_early_season_flooding_for_year(region, year: int) -> bool:
     """Same signal as _check_early_season_flooding() (NDWI > 0 in the
     early-Kharif transplanting window), but for an arbitrary past year
-    instead of the hardcoded 2023 that function uses for the *current*
-    season's identification.
+    instead of the latest-completed-year window that function uses for
+    the *current* season's identification.
     """
     try:
         s2 = (
@@ -186,11 +187,24 @@ def _check_early_season_flooding_for_year(region, year: int) -> bool:
         return False
 
 
-def _fetch_monthly_ndvi(region) -> List[Optional[float]]:
+def _latest_completed_calendar_year() -> int:
+    """The current season's identification used to hardcode 2023 — as of
+    this environment's actual date, that's now 3 years stale. Same
+    "latest completed year" convention already used elsewhere in this
+    app (earth_engine_service._latest_completed_climate_year,
+    weather_indices_service._latest_completed_year) rather than the
+    current in-progress year, since a partial year's data would skew
+    both the 12-month NDVI cycle and the early-Kharif flood check.
+    """
+    return datetime.utcnow().year - 1
+
+
+def _fetch_monthly_ndvi(region, year: Optional[int] = None) -> List[Optional[float]]:
+    year = year or _latest_completed_calendar_year()
     monthly = []
     for m in range(1, 13):
-        start = f"2023-{m:02d}-01"
-        end_month, end_year = (m + 1, 2023) if m < 12 else (1, 2024)
+        start = f"{year}-{m:02d}-01"
+        end_month, end_year = (m + 1, year) if m < 12 else (1, year + 1)
         end = f"{end_year}-{end_month:02d}-01"
         s2 = (
             ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
@@ -210,10 +224,11 @@ def _check_early_season_flooding(region, kharif: bool) -> bool:
     """
     if not kharif:
         return False
+    year = _latest_completed_calendar_year()
     try:
         s2 = (
             ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-            .filterDate("2023-06-15", "2023-08-15")
+            .filterDate(f"{year}-06-15", f"{year}-08-15")
             .filterBounds(region)
             .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
         )

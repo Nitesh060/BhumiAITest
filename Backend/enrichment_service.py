@@ -7,7 +7,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import ee
 
-from earth_engine_service import _get_region, _reduce_mean, _buffered_region
+from earth_engine_service import (
+    _get_region, _reduce_mean, _buffered_region,
+    _scaled_region, MODIS_LST_SCALE_M,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,16 +78,24 @@ def fetch_irrigation_signal(lat: float, lng: float, polygon: Optional[dict] = No
         ndvi = coll.map(lambda img:img.normalizedDifference(["B8","B4"]).rename("NDVI")).select("NDVI").mean()
         val = _reduce_mean(ndvi,region,scale=20)
     except Exception:
+        logger.exception("Irrigation-signal fetch failed")
         val = None
     return {"dry_season_ndvi":round(val,4) if val is not None else None,"likely_irrigated":val>0.35 if val is not None else None,"confidence":"Indicative — based on dry-season vegetation greenness, not canal/pump records.","source":"Sentinel-2 (Feb-Apr NDVI)"}
 
 
 def fetch_temperature_annual_range(lat: float, lng: float, polygon: Optional[dict] = None) -> Dict[str, Any]:
-    region=_get_region(lat,lng,polygon)
+    # Same unscaled-region bug already fixed elsewhere in this app: MODIS
+    # LST's ~1km pixel needs a region sized to that scale (_scaled_region),
+    # not the bare `_get_region()` ~30m point buffer this used before —
+    # that covered a negligible fraction of a MODIS pixel, so min/max/mean
+    # reduced to None on essentially every point-based farm (the common
+    # case, since most users drop a pin rather than draw a polygon).
+    region=_scaled_region(lat,lng,polygon,MODIS_LST_SCALE_M)
     coll=ee.ImageCollection("MODIS/061/MOD11A1").filterDate("2023-01-01","2024-01-01").filterBounds(region).select("LST_Day_1km").map(lambda img:img.multiply(0.02).subtract(273.15).rename("LST_C"))
     try:
-        stats=coll.reduce(ee.Reducer.minMax().combine(ee.Reducer.mean(),sharedInputs=True)).reduceRegion(reducer=ee.Reducer.mean(),geometry=region,scale=1000,maxPixels=1e9).getInfo() or {}
+        stats=coll.reduce(ee.Reducer.minMax().combine(ee.Reducer.mean(),sharedInputs=True)).reduceRegion(reducer=ee.Reducer.mean(),geometry=region,scale=MODIS_LST_SCALE_M,maxPixels=1e9,bestEffort=True,tileScale=4).getInfo() or {}
     except Exception:
+        logger.exception("Temperature annual-range fetch failed")
         stats={}
     return {"min_c":round(stats["LST_C_min"],2) if stats.get("LST_C_min") is not None else None,"max_c":round(stats["LST_C_max"],2) if stats.get("LST_C_max") is not None else None,"mean_c":round(stats["LST_C_mean"],2) if stats.get("LST_C_mean") is not None else None,"source":"MODIS LST (full calendar year 2023)"}
 
@@ -92,7 +103,9 @@ def fetch_temperature_annual_range(lat: float, lng: float, polygon: Optional[dic
 def fetch_prosperity_proxy(lat: float, lng: float, polygon: Optional[dict] = None, radius_m: int = 5000) -> Dict[str, Any]:
     region=_buffered_region(lat,lng,radius_m)
     try: val=_reduce_mean(ee.ImageCollection("NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG").filterDate("2023-01-01","2024-01-01").select("avg_rad").mean(),region,scale=500)
-    except Exception: val=None
+    except Exception:
+        logger.exception("Prosperity-proxy fetch failed")
+        val=None
     tier=None if val is None else ("Low economic activity (rural/agrarian)" if val<1 else "Moderate economic activity" if val<5 else "High economic activity (peri-urban/urban proximity)")
     return {"avg_radiance":round(val,3) if val is not None else None,"tier":tier,"note":"Proxy indicator from satellite nightlights, not an official government prosperity index.","source":"VIIRS Nighttime Lights, 5 km radius"}
 
@@ -100,7 +113,9 @@ def fetch_prosperity_proxy(lat: float, lng: float, polygon: Optional[dict] = Non
 def fetch_nearest_water_body_signal(lat: float, lng: float, polygon: Optional[dict] = None) -> Dict[str, Any]:
     region=_buffered_region(lat,lng,2000)
     try: result=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gt(50).selfMask().reduceRegion(reducer=ee.Reducer.count(),geometry=region,scale=30,maxPixels=1e9).getInfo() or {}
-    except Exception: result={}
+    except Exception:
+        logger.exception("Nearest-water-body fetch failed")
+        result={}
     px=int(result.get("occurrence",0) or 0)
     return {"water_pixels_within_2km":px,"water_present":px>0,"source":"JRC Global Surface Water (30 m, >50% occurrence)"}
 
@@ -186,7 +201,9 @@ def fetch_village_population(lat: float, lng: float, radius_m: int=1500) -> Dict
         img=ee.ImageCollection("WorldPop/GP/100m/pop").filterBounds(region).mosaic()
         result=img.reduceRegion(reducer=ee.Reducer.sum(),geometry=region,scale=100,maxPixels=1e9,bestEffort=True).getInfo() or {}
         total=next(iter(result.values()),None)
-    except Exception: total=None
+    except Exception:
+        logger.exception("Village-population fetch failed")
+        total=None
     return {"estimated_population":round(float(total)) if total is not None else None,"radius_m":radius_m,"source":"WorldPop 100m gridded population estimate"}
 
 

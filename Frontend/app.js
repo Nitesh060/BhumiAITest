@@ -379,6 +379,18 @@ async function fetchWeather(lat, lng) {
 const OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
+    // Third, independently-hosted mirror — added after both of the
+    // above were confirmed (via a user's live DevTools + a direct
+    // browser navigation to the bare domain, no app involved)
+    // unreachable with net::ERR_CONNECTION_TIMED_OUT from that user's
+    // network, on both WiFi and mobile data. That rules out a bug in
+    // this app's request handling — it's a connectivity/DNS/regional
+    // routing problem between that network and these two specific
+    // hosts. A third mirror on different infrastructure gives a real
+    // chance of succeeding where the first two can't, without
+    // resolving (or needing to resolve) whatever is blocking the
+    // other two.
+    "https://overpass.private.coffee/api/interpreter",
 ];
 // Both Overpass QL queries below declare `[timeout:25]` — i.e. they
 // tell the server it may take up to 25s to compute. This client-side

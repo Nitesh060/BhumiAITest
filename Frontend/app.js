@@ -380,7 +380,16 @@ const OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
 ];
-const OVERPASS_TIMEOUT_MS = 15000;
+// Both Overpass QL queries below declare `[timeout:25]` — i.e. they
+// tell the server it may take up to 25s to compute. This client-side
+// abort used to fire at 15s, well before that budget was up, so any
+// query that took Overpass more than 15s (confirmed live: real queries
+// were landing in the 15.5s range) got canceled by our own code before
+// the server ever had a chance to finish — not a real Overpass outage,
+// just us hanging up too early on our own request. Set comfortably
+// above the query's own 25s budget, with a few seconds of slack for
+// network/queueing overhead.
+const OVERPASS_TIMEOUT_MS = 28000;
 
 async function overpassQuery(query, endpoint) {
     const controller = new AbortController();

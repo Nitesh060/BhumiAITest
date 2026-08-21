@@ -852,6 +852,52 @@ def _attach_trained_model_prediction(result: dict, image_bytes: bytes) -> None:
         logger.exception("Trained plant-disease model inference failed (non-fatal)")
 
 
+def _trained_model_only_result(image_bytes: bytes) -> Optional[dict]:
+    """Builds a full /diagnose response using ONLY the trained model,
+    for when Gemini is unavailable (no GEMINI_API_KEY, rate-limited,
+    down, etc.). The whole reason this app trains its own model is to
+    have a second signal that doesn't depend on Gemini's availability
+    — without this fallback, a Gemini outage disabled diagnosis
+    entirely even though a perfectly working independent model sat
+    right next to it unused. Returns None (falls through to /diagnose's
+    existing 503) if the trained model is unavailable either.
+    """
+    if plant_disease_model is None or PILImage is None:
+        return None
+    try:
+        image = PILImage.open(io.BytesIO(image_bytes))
+        prediction = plant_disease_model.classify_image(image)
+    except Exception:
+        logger.exception("Trained-model-only fallback inference failed")
+        return None
+    if prediction is None:
+        return None
+
+    crop, _, condition = prediction["label"].partition("___")
+    is_healthy = condition.lower() == "healthy"
+    confidence_pct = prediction["confidence"]
+    confidence_bucket = "High" if confidence_pct >= 80 else "Medium" if confidence_pct >= 50 else "Low"
+
+    return {
+        "is_plant": True,
+        "crop_guess": crop.replace("_", " "),
+        "category": "healthy" if is_healthy else "disease",
+        "diagnosis": "No obvious issue detected" if is_healthy else condition.replace("_", " "),
+        "confidence": confidence_bucket,
+        "symptoms_observed": [],
+        "remedy_steps": [],
+        "approx_cost_inr": None,
+        "caveat": (
+            "Gemini AI is currently unavailable, so this diagnosis comes only "
+            "from our own trained model — no remedy suggestions or cost estimate "
+            "in this mode. Treat it as preliminary and confirm with a local "
+            "agricultural extension officer."
+        ),
+        "trained_model_prediction": prediction,
+        "trained_model_only": True,
+    }
+
+
 @app.route("/diagnose", methods=["POST"])
 def diagnose():
     """Crop disease diagnosis from an uploaded photo (multipart/form-data,
@@ -861,6 +907,11 @@ def diagnose():
     attaches an independent trained-model prediction (MobileNetV2 on
     PlantVillage) as "trained_model_prediction" when that model is
     available — a second, differently-sourced opinion on the same photo.
+
+    If Gemini is unavailable (no GEMINI_API_KEY, rate-limited, etc.),
+    falls back to a trained-model-only response (see
+    _trained_model_only_result) rather than failing outright — only
+    returns the 503 below if BOTH are unavailable.
     """
     if "image" not in request.files:
         return jsonify({"error": "No 'image' file in request"}), 400
@@ -887,12 +938,16 @@ def diagnose():
         logger.exception("Crop diagnosis failed")
         result = None
 
+    if result is not None:
+        _attach_trained_model_prediction(result, image_bytes)
+    else:
+        result = _trained_model_only_result(image_bytes)
+
     if result is None:
         return jsonify({
-            "error": "AI diagnosis is currently unavailable. Check that GEMINI_API_KEY is configured."
+            "error": "AI diagnosis is currently unavailable. Check that GEMINI_API_KEY is "
+                     "configured, and that the trained model checkpoint is present."
         }), 503
-
-    _attach_trained_model_prediction(result, image_bytes)
 
     return jsonify(result), 200
 

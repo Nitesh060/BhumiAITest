@@ -98,3 +98,82 @@ class TestAttachTrainedModelPrediction:
         app_module._attach_trained_model_prediction(result, b"not a real image")  # must not raise
 
         assert "trained_model_prediction" not in result
+
+
+class TestTrainedModelOnlyFallback:
+    """The actual production bug reported: /diagnose returned a hard
+    503 ("AI diagnosis is currently unavailable... GEMINI_API_KEY")
+    the moment Gemini was unavailable — even though the trained model
+    sitting right next to it could answer perfectly well on its own.
+    _trained_model_only_result is what /diagnose now falls back to in
+    that case, so it must produce a usable, self-contained response
+    from the trained model alone.
+    """
+
+    def test_none_when_plant_disease_model_unavailable(self, monkeypatch):
+        monkeypatch.setattr(app_module, "plant_disease_model", None)
+        assert app_module._trained_model_only_result(_TINY_PNG_BYTES) is None
+
+    def test_none_when_classifier_has_no_checkpoint_yet(self, monkeypatch):
+        monkeypatch.setattr(app_module, "PILImage", PILImage)
+        fake_module = type(sys)("fake_plant_disease_model")
+        fake_module.classify_image = lambda image: None
+        monkeypatch.setattr(app_module, "plant_disease_model", fake_module)
+
+        assert app_module._trained_model_only_result(_TINY_PNG_BYTES) is None
+
+    def test_none_on_inference_exception(self, monkeypatch):
+        monkeypatch.setattr(app_module, "PILImage", PILImage)
+        fake_module = type(sys)("fake_plant_disease_model")
+
+        def _raise(image):
+            raise RuntimeError("simulated inference failure")
+
+        fake_module.classify_image = _raise
+        monkeypatch.setattr(app_module, "plant_disease_model", fake_module)
+
+        assert app_module._trained_model_only_result(_TINY_PNG_BYTES) is None  # must not raise
+
+    def test_disease_prediction_builds_usable_result(self, monkeypatch):
+        monkeypatch.setattr(app_module, "PILImage", PILImage)
+        fake_module = type(sys)("fake_plant_disease_model")
+        fake_module.classify_image = lambda image: {
+            "label": "Tomato___Late_blight", "confidence": 92.3, "top3": [],
+        }
+        monkeypatch.setattr(app_module, "plant_disease_model", fake_module)
+
+        result = app_module._trained_model_only_result(_TINY_PNG_BYTES)
+
+        assert result["is_plant"] is True
+        assert result["crop_guess"] == "Tomato"
+        assert result["category"] == "disease"
+        assert result["diagnosis"] == "Late blight"
+        assert result["confidence"] == "High"
+        assert result["trained_model_only"] is True
+        assert "Gemini" in result["caveat"]
+        assert result["trained_model_prediction"]["label"] == "Tomato___Late_blight"
+
+    def test_healthy_prediction_reports_no_issue(self, monkeypatch):
+        monkeypatch.setattr(app_module, "PILImage", PILImage)
+        fake_module = type(sys)("fake_plant_disease_model")
+        fake_module.classify_image = lambda image: {
+            "label": "Corn_(maize)___healthy", "confidence": 65.7, "top3": [],
+        }
+        monkeypatch.setattr(app_module, "plant_disease_model", fake_module)
+
+        result = app_module._trained_model_only_result(_TINY_PNG_BYTES)
+
+        assert result["category"] == "healthy"
+        assert result["diagnosis"] == "No obvious issue detected"
+
+    def test_confidence_bucketing(self, monkeypatch):
+        monkeypatch.setattr(app_module, "PILImage", PILImage)
+        fake_module = type(sys)("fake_plant_disease_model")
+
+        for confidence_pct, expected_bucket in [(95.0, "High"), (80.0, "High"), (79.9, "Medium"), (50.0, "Medium"), (49.9, "Low")]:
+            fake_module.classify_image = lambda image, c=confidence_pct: {
+                "label": "Apple___healthy", "confidence": c, "top3": [],
+            }
+            monkeypatch.setattr(app_module, "plant_disease_model", fake_module)
+            result = app_module._trained_model_only_result(_TINY_PNG_BYTES)
+            assert result["confidence"] == expected_bucket, f"{confidence_pct}% should bucket to {expected_bucket}"

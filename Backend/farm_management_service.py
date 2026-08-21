@@ -48,12 +48,27 @@ def get_farmer(db: Session, farmer_id: str) -> Optional[Farmer]:
     return db.query(Farmer).filter(Farmer.id == farmer_id).first()
 
 
+# Only these keys are settable via update_farmer/update_farm's **fields —
+# previously any key from the client's JSON body was applied via
+# `setattr(obj, k, v)` as long as `hasattr(obj, k)` was true, which is
+# true for FAR more than the intended editable columns. On Farmer, that
+# included the `farms` relationship itself (cascade="all, delete-orphan"
+# in models.py) — a plain `PUT /farmers/<id>` with `{"farms": []}`, from
+# ANY authenticated role (not just admin), silently deleted every Farm
+# row for that farmer, bypassing the admin-only delete rule enforced
+# elsewhere. On Farm, `farmer_id` could be overwritten the same way,
+# reassigning a farm to a different farmer (IDOR-style). Only real,
+# user-editable columns are allowed now.
+_FARMER_UPDATABLE_FIELDS = {"name", "phone", "village", "district", "state"}
+_FARM_UPDATABLE_FIELDS = {"label", "lat", "lng", "survey_method", "land_use_type", "survey_number"}
+
+
 def update_farmer(db: Session, farmer_id: str, **fields) -> Optional[Farmer]:
     farmer = get_farmer(db, farmer_id)
     if not farmer:
         return None
     for k, v in fields.items():
-        if v is not None and hasattr(farmer, k):
+        if k in _FARMER_UPDATABLE_FIELDS and v is not None:
             setattr(farmer, k, v)
     db.commit()
     db.refresh(farmer)
@@ -122,7 +137,7 @@ def update_farm(db: Session, farm_id: str, **fields) -> Optional[Farm]:
             except Exception:
                 logger.exception("Area recomputation failed on farm update (non-fatal)")
     for k, v in fields.items():
-        if v is not None and hasattr(farm, k):
+        if k in _FARM_UPDATABLE_FIELDS and v is not None:
             setattr(farm, k, v)
     db.commit()
     db.refresh(farm)

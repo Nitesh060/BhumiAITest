@@ -6,11 +6,12 @@ PlantVillage dataset:
   https://www.kaggle.com/datasets/abdallahalidev/plantvillage-dataset
 
 This needs a real GPU-hours + internet budget (downloading both the
-~2GB dataset and ImageNet-pretrained MobileNetV2 weights), which this
-repo's Render deployment deliberately doesn't carry (see requirements.txt's
-note on why torch/Pillow/torchvision are kept out of the deployed app).
-Run this on your own machine or in Google Colab (free GPU, everything
-below already preinstalled there) instead.
+~2GB dataset and ImageNet-pretrained MobileNetV2 weights) that's
+impractical to spend inside a deployed Render web request — training
+itself doesn't belong in the running app. Run this on your own machine
+or in Google Colab (free GPU, everything below already preinstalled
+there) instead; app.py only needs the checkpoint this script produces,
+not the training run itself.
 
 1. Download + unzip the dataset (Colab: Kaggle -> Settings -> API ->
    Create New Token -> upload kaggle.json, then:
@@ -21,19 +22,25 @@ below already preinstalled there) instead.
 
    The dataset ships three parallel copies of the same 38 classes
    (color / grayscale / segmented) — use the "color" one; it's the
-   closest match to real farmer phone-camera photos.
+   closest match to real farmer phone-camera photos. Watch the actual
+   extracted path though — some zip layouts nest it as
+   "plantvillage/plantvillage dataset/color" rather than
+   "plantvillage/color"; `!find plantvillage -maxdepth 3 -type d` shows
+   the real layout if --data below can't find it.
 
-2. Install training-only deps (not needed by the deployed web app):
+2. Install training-only deps (torch/torchvision/Pillow are already in
+   requirements.txt for the deployed app's own /diagnose inference —
+   Colab already has all three preinstalled anyway):
      pip install torch torchvision pillow
 
 3. Run:
-     python train_plant_disease.py --data ./plantvillage/color --epochs 10
+     python train_plant_disease.py --data "./plantvillage/color" --epochs 10
 
    Produces plant_disease_model.pt + plant_disease_classes.json next to
-   this file — copy both alongside plant_disease_model.py in the deployed
-   app (or wherever crop_intelligence_service.py's photo-diagnosis code
-   ends up calling classify_image() — see ROADMAP.md Phase 11/14) to
-   make it start returning real predictions instead of None.
+   this file — copy both into Backend/ alongside plant_disease_model.py
+   (app.py's /diagnose route already calls classify_image() — see
+   ROADMAP.md Phase 14) to make it start returning real predictions
+   instead of None.
 """
 
 from __future__ import annotations

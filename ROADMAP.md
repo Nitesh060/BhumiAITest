@@ -108,12 +108,16 @@ via the current general-purpose vision model can be evaluated as-is.
   commerce code before the partnerships exist.
 - Done: `Backend/plant_disease_model.py` (MobileNetV2, transfer-learned on
   the PlantVillage dataset, 38 classes, ~99.5% validation accuracy) is
-  trained and wired into `/diagnose` (`app.py`) as an independent
-  cross-check alongside the existing Gemini call — see
-  `_attach_trained_model_prediction`. `Backend/train_plant_disease.py`
+  trained and is now the sole model behind `/diagnose` (`app.py`,
+  `_diagnose_with_trained_model`) — Gemini is no longer called for photo
+  diagnosis at all, by explicit choice. `Backend/train_plant_disease.py`
   remains the retraining path if the checkpoint ever needs updating
   (new classes, more data, a different base dataset) — run it in Colab
   or locally, never as part of a deployed request.
+- Still open: remedy/treatment advice and cost estimates, which the
+  classifier alone can't produce (it only outputs a disease label +
+  confidence) — Gemini used to fill this in. A static disease->remedy
+  lookup table would close this without reintroducing Gemini, if wanted.
 
 ---
 

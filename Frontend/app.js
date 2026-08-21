@@ -1297,9 +1297,10 @@ chatInput.addEventListener("keydown", (e) => {
 });
 
 /* ===================================================================
-   Crop Disease Diagnosis — real Gemini vision, uploaded photo only.
-   Always shows confidence + caveat exactly as returned by the backend;
-   never invents extra certainty client-side.
+   Crop Disease Diagnosis — our own trained MobileNetV2 classifier
+   (see Backend/plant_disease_model.py), uploaded photo only. No
+   Gemini call. Always shows confidence + caveat exactly as returned
+   by the backend; never invents extra certainty client-side.
    =================================================================== */
 
 const diagnoseOverlay = document.getElementById("diagnose-overlay");
@@ -1359,22 +1360,17 @@ function formatTrainedModelLabel(label) {
     return String(label || "").replaceAll("___", " — ").replaceAll("_", " ");
 }
 
+// The diagnosis/crop_guess/confidence fields above already ARE this
+// same model's top prediction — this section only adds its runner-up
+// guesses (top3[1:]), so there's nothing to show when there aren't any.
 function renderTrainedModelSection(prediction) {
-    if (!prediction) return "";
-    const label = escapeHTML(formatTrainedModelLabel(prediction.label));
-    const confidence = Number(prediction.confidence ?? 0).toFixed(1);
-    const top3 = (prediction.top3 || []).slice(1) // first entry duplicates the label/confidence above
+    const alternatives = (prediction?.top3 || []).slice(1) // first entry duplicates the diagnosis above
         .map(p => `<li>${escapeHTML(formatTrainedModelLabel(p.label))} — ${Number(p.confidence ?? 0).toFixed(1)}%</li>`)
         .join("");
+    if (!alternatives) return "";
     return `
         <div class="diag-section diag-trained-model">
-            <strong>🧠 Trained model cross-check</strong>
-            <div class="diag-row">
-                <span class="diag-label">Prediction</span>
-                <span>${label} (${confidence}%)</span>
-            </div>
-            ${top3 ? `<div class="diag-trained-model-alt">Other possibilities:<ul>${top3}</ul></div>` : ""}
-            <p class="diag-trained-model-note">An independent MobileNetV2 model trained on the PlantVillage dataset — a second, differently-sourced opinion on the same photo, not a replacement for the diagnosis above.</p>
+            <div class="diag-trained-model-alt">Other possibilities our model considered:<ul>${alternatives}</ul></div>
         </div>`;
 }
 
@@ -1394,10 +1390,9 @@ async function submitDiagnosis() {
 
         if (!res.ok) throw new Error(data.error || "Diagnosis failed");
 
-        // Every field below comes from Gemini's response to an uploaded
-        // photo — a known prompt-injection surface (crafted image text
-        // coaxing the model into echoing HTML/script). None of it is
-        // trusted as safe markup.
+        // Every field below comes from the backend's AI-classified
+        // response to an uploaded photo. None of it is trusted as safe
+        // markup — escape everything before it touches innerHTML.
         if (data.is_plant === false) {
             diagnoseResult.innerHTML = `
                 <p class="diag-not-plant">This doesn't look like a plant/crop photo. ${escapeHTML(data.diagnosis || "")}</p>`;

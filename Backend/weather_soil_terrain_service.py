@@ -29,9 +29,20 @@ from typing import Any, Dict, List, Optional
 
 import ee
 
-from earth_engine_service import _get_region, _reduce_mean, _buffered_region
+from earth_engine_service import (
+    _get_region, _reduce_mean, _buffered_region,
+    _scaled_region, _reduce_mean_with_retry,
+    CHIRPS_SCALE_M, MODIS_LST_SCALE_M,
+)
 
 logger = logging.getLogger(__name__)
+
+# NASA SMAP SPL4SMGP's native grid is ~9km (commonly rounded to 10km for
+# reduceRegion scale purposes, matching the scale value this module
+# already used before this fix) — no shared constant for it exists
+# alongside CHIRPS/MODIS/ERA5/GLDAS's in earth_engine_service.py, so
+# it's defined locally here.
+SMAP_SCALE_M = 10000
 
 
 # ---------------------------------------------------------------------------
@@ -40,29 +51,41 @@ logger = logging.getLogger(__name__)
 
 def fetch_historical_weather(lat: float, lng: float, polygon: Optional[dict] = None,
                               start_year: int = 2015, end_year: Optional[int] = None) -> Dict[str, Any]:
+    """Root cause of this always returning empty/null years: reduceRegion
+    ran against the bare `_get_region()` geometry — a ~30m point buffer,
+    or a modest farm polygon — regardless of CHIRPS's (~5.5km) or MODIS
+    LST's (~1km) actual pixel size. A weighted `ee.Reducer.mean()` only
+    counts a pixel if the query geometry covers at least ~0.4% of that
+    pixel's area (see earth_engine_service._min_scale_buffer_m's
+    docstring); a 30m buffer covers a negligible fraction of either,
+    so this reduced to None on essentially every year, every request.
+    Switched to `_scaled_region`/`_reduce_mean_with_retry` — the same
+    fix already proven for these exact datasets elsewhere in this app.
+    """
     if end_year is None:
         end_year = datetime.utcnow().year
 
-    region = _get_region(lat, lng, polygon)
+    chirps_region = _scaled_region(lat, lng, polygon, CHIRPS_SCALE_M)
+    modis_region = _scaled_region(lat, lng, polygon, MODIS_LST_SCALE_M)
     yearly: List[Dict[str, Any]] = []
 
     for year in range(start_year, end_year + 1):
         rain_coll = (
             ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
             .filterDate(f"{year}-01-01", f"{year}-12-31")
-            .filterBounds(region)
+            .filterBounds(chirps_region)
         )
         rain_total = rain_coll.sum()
-        rain_val = _reduce_mean(rain_total, region, scale=5000)
+        rain_val = _reduce_mean_with_retry(rain_total, lat, lng, polygon, CHIRPS_SCALE_M)
 
         temp_coll = (
             ee.ImageCollection("MODIS/061/MOD11A1")
             .filterDate(f"{year}-01-01", f"{year}-12-31")
-            .filterBounds(region)
+            .filterBounds(modis_region)
             .select("LST_Day_1km")
             .map(lambda img: img.multiply(0.02).subtract(273.15).rename("LST_C"))
         )
-        temp_val = _reduce_mean(temp_coll.mean(), region, scale=1000)
+        temp_val = _reduce_mean_with_retry(temp_coll.mean(), lat, lng, polygon, MODIS_LST_SCALE_M)
 
         yearly.append({
             "year": year,
@@ -150,7 +173,11 @@ def fetch_soil_moisture(lat: float, lng: float, polygon: Optional[dict] = None) 
     unlike the GLDAS terrestrial-water-storage proxy already used
     elsewhere in this app (which is deeper and less direct).
     """
-    region = _get_region(lat, lng, polygon)
+    # Same unscaled-region bug as fetch_historical_weather above: SMAP's
+    # native pixel is ~9-10km, and a bare `_get_region()` (~30m point
+    # buffer) covers a negligible fraction of one — `_reduce_mean`
+    # reduced to None on essentially every request. Fixed the same way.
+    region = _scaled_region(lat, lng, polygon, SMAP_SCALE_M)
 
     try:
         coll = (
@@ -163,7 +190,7 @@ def fetch_soil_moisture(lat: float, lng: float, polygon: Optional[dict] = None) 
         if count == 0:
             return {"available": False, "reason": "No recent SMAP scenes for this location.", "source": "NASA SMAP"}
 
-        val = _reduce_mean(coll.mean(), region, scale=10000)
+        val = _reduce_mean_with_retry(coll.mean(), lat, lng, polygon, SMAP_SCALE_M)
         if val is None:
             return {"available": False, "reason": "SMAP data unavailable for this location.", "source": "NASA SMAP"}
 

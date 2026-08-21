@@ -1352,6 +1352,32 @@ function confidenceColor(level) {
     return "var(--danger)";
 }
 
+// plant_disease_model.py's labels come straight from PlantVillage's
+// folder names, e.g. "Tomato___Late_blight" — readable to a developer,
+// not to a farmer. Purely cosmetic (___ -> " — ", _ -> " ").
+function formatTrainedModelLabel(label) {
+    return String(label || "").replaceAll("___", " — ").replaceAll("_", " ");
+}
+
+function renderTrainedModelSection(prediction) {
+    if (!prediction) return "";
+    const label = escapeHTML(formatTrainedModelLabel(prediction.label));
+    const confidence = Number(prediction.confidence ?? 0).toFixed(1);
+    const top3 = (prediction.top3 || []).slice(1) // first entry duplicates the label/confidence above
+        .map(p => `<li>${escapeHTML(formatTrainedModelLabel(p.label))} — ${Number(p.confidence ?? 0).toFixed(1)}%</li>`)
+        .join("");
+    return `
+        <div class="diag-section diag-trained-model">
+            <strong>🧠 Trained model cross-check</strong>
+            <div class="diag-row">
+                <span class="diag-label">Prediction</span>
+                <span>${label} (${confidence}%)</span>
+            </div>
+            ${top3 ? `<div class="diag-trained-model-alt">Other possibilities:<ul>${top3}</ul></div>` : ""}
+            <p class="diag-trained-model-note">An independent MobileNetV2 model trained on the PlantVillage dataset — a second, differently-sourced opinion on the same photo, not a replacement for the diagnosis above.</p>
+        </div>`;
+}
+
 async function submitDiagnosis() {
     if (!selectedImageFile) return;
 
@@ -1394,6 +1420,7 @@ async function submitDiagnosis() {
                 </div>
                 ${symptoms ? `<div class="diag-section"><strong>Symptoms observed</strong><ul>${symptoms}</ul></div>` : ""}
                 ${remedies ? `<div class="diag-section"><strong>Suggested next steps</strong><ul>${remedies}</ul></div>` : ""}
+                ${renderTrainedModelSection(data.trained_model_prediction)}
                 <p class="diag-caveat">⚠ ${escapeHTML(data.caveat || "This is an AI estimate, not a substitute for expert advice.")}</p>`;
         }
 

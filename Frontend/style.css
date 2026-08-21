@@ -1374,6 +1374,31 @@ body {
     color: var(--text-muted);
 }
 
+.diag-trained-model {
+    padding: 8px 10px;
+    background: var(--surface);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.diag-trained-model-alt {
+    margin: 6px 0 0;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+.diag-trained-model-alt ul {
+    margin: 4px 0 0;
+    padding-left: 18px;
+}
+
+.diag-trained-model-note {
+    margin: 8px 0 0;
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+}
+
 /* ---------------------------------------------------------------------- */
 /* Spectral Intelligence modal                                            */
 /* ---------------------------------------------------------------------- */

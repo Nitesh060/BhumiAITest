@@ -87,6 +87,7 @@ from insurance_intelligence_service import (
 )
 from historical_timeline_service import fetch_before_after_comparison as _fetch_before_after_for_claim
 from crop_intelligence_service import identify_crop_heuristic as _identify_crop_for_claim
+from seasonal_data_service import fetch_seasonal_comprehensive_data
 
 load_dotenv()
 
@@ -197,6 +198,172 @@ def _verify_score_signature(body: dict) -> bool:
     except (TypeError, ValueError):
         return False
     return hmac_lib.compare_digest(sig, expected)
+
+
+# ---------------------------------------------------------------------------
+# Seasonal (Kharif + Rabi) data pipeline — the real, live data source for
+# most of the parameters below.
+# ---------------------------------------------------------------------------
+# This used to live in wsgi.py, which reassigned these exact names on
+# THIS module's own globals from the outside, after import — invisible
+# to anyone reading this file top-to-bottom, or reading
+# weather_indices_service.py/spectral_service.py/spectral_indices.py on
+# their own and reasonably assuming those are what run in production.
+# That hiddenness is exactly why an earlier fix to
+# weather_indices_service.py's SPI/solar-radiation logic had zero
+# effect on the live site: those functions were never actually being
+# called by /calculate or /comprehensive-score, only their seasonal
+# replacements below were. Moved here, explicit, so the real call graph
+# matches what this file appears to do.
+#
+# Every parameter below is recomputed as an average of the latest
+# available Kharif and Rabi seasons (see seasonal_data_service.py)
+# rather than the single rolling window the "real" per-parameter
+# functions imported above use. The 20-parameter FarmScore formula
+# itself is unchanged — only these inputs are seasonally averaged.
+#
+# SPEI is a deliberate exception: it keeps using the real
+# weather_indices_service.fetch_spei (CSIC SPEIbase, falling back to a
+# Thornthwaite proxy) rather than a seasonal average, because that's a
+# strictly better implementation (proper FAO-56 Penman-Monteith PET)
+# than the seasonal pipeline's Thornthwaite-only version. wsgi.py used
+# to also define a seasonal SPEI wrapper, but bound it to the wrong
+# module attribute name (fetch_spei_proxy instead of the fetch_spei this
+# file actually imports and calls) — that mismatch meant it silently
+# never ran, which is *why* SPEI kept working correctly throughout all
+# of this, by accident rather than by design. Not repeating that
+# function here at all, so there is no dead code standing in for a
+# decision that was never really made on purpose.
+from collections import OrderedDict as _OrderedDict
+
+_season_cache: "_OrderedDict" = _OrderedDict()
+_SEASON_CACHE_MAX = 50
+_original_fetch_farm_data = fetch_farm_data
+
+
+def _season_key(lat, lng, polygon):
+    return (round(float(lat), 5), round(float(lng), 5), str(polygon) if polygon else "")
+
+
+def _get_seasonal(lat, lng, polygon=None):
+    key = _season_key(lat, lng, polygon)
+    if key not in _season_cache:
+        _season_cache[key] = fetch_seasonal_comprehensive_data(lat, lng, polygon)
+        if len(_season_cache) > _SEASON_CACHE_MAX:
+            _season_cache.popitem(last=False)  # evict oldest entry
+    else:
+        _season_cache.move_to_end(key)  # keep recently-used entries alive longest
+    return _season_cache[key]
+
+
+def _seasonal_farm_data(lat, lng, polygon=None):
+    base = _original_fetch_farm_data(lat, lng, polygon)
+    seasonal = _get_seasonal(lat, lng, polygon)
+    raw = seasonal["raw_values"]
+    rainfall = raw.get("rainfall")
+    lst = raw.get("lst")
+    base.update({
+        "ndvi": raw.get("ndvi"), "ndmi": raw.get("ndmi"), "ndwi": raw.get("ndwi"),
+        "rainfall": rainfall,
+        # `rainfall_reason` used to be left over from `base`'s own real,
+        # non-seasonal rainfall fetch above — if that one succeeded (reason
+        # correctly None) but the seasonal rainfall we're overwriting it
+        # with here failed, the stale "no error" reason was left standing
+        # next to a null value (this is literally the mechanism behind a
+        # live "rainfall_reason field itself was None/missing" log seen
+        # earlier this session). Recomputed against the value actually
+        # being kept, every time.
+        "rainfall_reason": None if rainfall is not None else (
+            "Kharif/Rabi seasonal rainfall unavailable for this location — see seasonal_analysis for the per-season detail."
+        ),
+        # `temperature` and `lst` are the same MODIS LST value under two
+        # historical field names (see earth_engine_service.fetch_farm_data).
+        # Only `temperature` used to be overwritten here, so `lst` silently
+        # kept the non-seasonal value — compute_farmscore reads `lst`
+        # specifically (10% of the comprehensive score), so that 10% was
+        # being computed from the wrong data window. Both updated together
+        # now.
+        "temperature": lst, "lst": lst,
+        "seasonal_analysis": seasonal["seasons"],
+        "season_method": seasonal["season_method"],
+        "season_count_used": seasonal["season_count_used"],
+    })
+    return base
+
+
+def _seasonal_extended_indices(lat, lng, polygon=None):
+    raw = _get_seasonal(lat, lng, polygon)["raw_values"]
+    return {
+        "evi": raw.get("evi"), "evi_label": None,
+        "savi": raw.get("savi"), "savi_label": None,
+        "msavi": raw.get("msavi"), "bsi": None, "bsi_label": None,
+        "ci_green": raw.get("ci_green"), "ci_rededge": raw.get("ci_rededge"),
+        "ndwi": raw.get("ndwi"),
+        "source": "Sentinel-2 SR Harmonized — latest Kharif + latest Rabi seasonal composite",
+    }
+
+
+def _seasonal_spectral(lat, lng, polygon=None):
+    raw = _get_seasonal(lat, lng, polygon)["raw_values"]
+    ndvi, ndre, ndmi = raw.get("ndvi") or 0.0, raw.get("ndre") or 0.0, raw.get("ndmi") or 0.0
+    chlorophyll = max(0.0, min(100.0, ndvi * 100.0))
+    nitrogen = max(0.0, min(100.0, (ndre + 0.1) / 0.6 * 100.0))
+    msi = ((1 - ndmi) / (1 + ndmi)) if ndmi > -1 else 2.0
+    moisture = max(0.0, min(100.0, (2.0 - msi) / 1.6 * 100.0))
+    stress = max(0.0, min(100.0, 100.0 - abs(chlorophyll - moisture)))
+    score = int(round(0.30 * chlorophyll + 0.25 * nitrogen + 0.25 * moisture + 0.20 * stress))
+    grade = "Excellent" if score >= 85 else "Good" if score >= 70 else "Moderate" if score >= 50 else "Fair" if score >= 30 else "Poor"
+    return {
+        "spectral_score": score, "grade": grade,
+        "method": "Seasonal Sentinel-2 multispectral proxy using latest Kharif and Rabi composites.",
+        "indices": {
+            "chlorophyll": {"label": "Chlorophyll & Canopy Health", "raw_value": round(ndvi, 4), "index": "NDVI", "sub_score": round(chlorophyll, 1), "weight": 30},
+            "nitrogen": {"label": "Nitrogen / Red-Edge Health", "raw_value": round(ndre, 4), "index": "NDRE", "sub_score": round(nitrogen, 1), "weight": 25},
+            "moisture_stress": {"label": "Moisture Status", "raw_value": round(ndmi, 4), "index": "NDMI", "sub_score": round(moisture, 1), "weight": 25},
+            "stress_risk": {"label": "Signal Consistency / Stress Risk", "raw_value": round(stress, 1), "index": "Composite", "sub_score": round(stress, 1), "weight": 20},
+        },
+        "flags": [], "source": "Sentinel-2 SR Harmonized",
+    }
+
+
+def _seasonal_sar(lat, lng, polygon=None):
+    raw = _get_seasonal(lat, lng, polygon)["raw_values"]
+    vv, vh = raw.get("vv"), raw.get("vh")
+    return {
+        "available": vv is not None and vh is not None,
+        "vv_db": vv, "vh_db": vh, "vh_vv_ratio": raw.get("vh_vv"), "rvi": raw.get("rvi"),
+        "flood_signal": bool(vv is not None and vv < -17) if vv is not None else None,
+        "source": "Sentinel-1 GRD — latest Kharif + latest Rabi seasonal composite",
+    }
+
+
+def _seasonal_solar(lat, lng, polygon=None):
+    v = _get_seasonal(lat, lng, polygon)["raw_values"].get("solar_radiation")
+    return {"available": v is not None, "avg_daily_solar_radiation_mj_m2": v, "source": "ECMWF ERA5-Land Daily Aggregate"}
+
+
+def _seasonal_spi(lat, lng, polygon=None):
+    v = _get_seasonal(lat, lng, polygon)["raw_values"].get("spi")
+    return {"available": v is not None, "spi": v, "source": "CHIRPS — latest Kharif + latest Rabi seasonal history"}
+
+
+def _seasonal_gdd(lat, lng, polygon=None):
+    v = _get_seasonal(lat, lng, polygon)["raw_values"].get("gdd")
+    return {"available": v is not None, "gdd": v, "source": "MODIS LST"}
+
+
+# Rebind the exact module-level names this file's routes call —
+# everywhere fetch_farm_data(...), fetch_spi(...), etc. appear below
+# (including inside compute_farmscore and /comprehensive-score), this
+# is what actually runs. fetch_spei is deliberately left un-rebound —
+# see the module note above.
+fetch_farm_data = _seasonal_farm_data
+fetch_extended_indices = _seasonal_extended_indices
+calculate_spectral_intelligence = _seasonal_spectral
+_fetch_sar_for_flood = _seasonal_sar
+fetch_solar_radiation = _seasonal_solar
+fetch_spi = _seasonal_spi
+fetch_gdd = _seasonal_gdd
 
 
 def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) -> dict:

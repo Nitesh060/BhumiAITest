@@ -13,6 +13,8 @@ import io
 import logging
 from typing import Any, Dict, List, Optional, Sequence
 
+from urllib.parse import urlparse
+
 import requests
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
@@ -181,14 +183,31 @@ def _line_chart(points: Sequence[float], labels: Sequence[str], width_mm_val: fl
         return None
 
 
+# /report/pdf's caller (app.py) only regenerates satellite_thumbnail
+# server-side when the client didn't already supply one — meaning a
+# client CAN supply their own `{"available": true, "url": "..."}` and
+# have this function fetch whatever URL they name (cloud metadata
+# endpoints, internal services — blind SSRF). The thumbnail is only ever
+# meant to be a Google Earth Engine getThumbURL() link, which always
+# resolves under a *.googleapis.com host — anything else is rejected
+# before a request is ever made, closing the SSRF path regardless of
+# what the client sends.
+_ALLOWED_IMAGE_HOST_SUFFIX = ".googleapis.com"
+
+
 def _safe_image(url: Optional[str], width_mm_val: float, timeout: float = 8.0) -> Optional[Image]:
     """Downloads a remote image (the satellite thumbnail URL) and
     returns a reportlab Image flowable sized to `width_mm_val` wide,
     preserving aspect ratio — or None on ANY failure (missing url,
-    network error, bad content, timeout). The PDF must render exactly
-    the same with or without this succeeding.
+    disallowed host, network error, bad content, timeout). The PDF must
+    render exactly the same with or without this succeeding.
     """
     if not url:
+        return None
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not (host == "googleapis.com" or host.endswith(_ALLOWED_IMAGE_HOST_SUFFIX)):
+        logger.warning("Rejected satellite thumbnail URL with disallowed host: %r", host)
         return None
     try:
         resp = requests.get(url, timeout=timeout)

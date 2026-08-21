@@ -25,11 +25,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install test runner
-        run: pip install pytest earthengine-api
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
       - name: Compile Python files
-        run: python -m compileall -q comprehensive_score_service.py scoring.py earth_engine_service.py weather_indices_service.py seasonal_data_service.py tests
+        run: python -m compileall -q app.py comprehensive_score_service.py scoring.py earth_engine_service.py weather_indices_service.py seasonal_data_service.py farm_management_service.py pdf_report.py tests
 
       - name: Run unit tests
         env:

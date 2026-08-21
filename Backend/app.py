@@ -6,6 +6,8 @@ Flask REST API for the FarmScore agricultural-suitability platform.
 
 from __future__ import annotations
 
+import hashlib
+import hmac as hmac_lib
 import logging
 import os
 import sys
@@ -158,6 +160,43 @@ def _ensure_ee_init():
 @app.route("/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "ok", "service": "FarmScore API"}), 200
+
+
+# /credit-intelligence trusts the `score` field of whatever /calculate-shaped
+# object the client sends it (by design — it never recomputes score/yield/
+# climate_risk, only combines what's already there), and feeds it straight
+# into compute_bcis_score/recommend_loan_ceiling/auto_freeze_check. Nothing
+# stopped a caller from just inventing a high score to inflate their own
+# recommended loan ceiling. Rather than recomputing the score server-side
+# (an expensive Earth-Engine round trip on every credit-intelligence call —
+# exactly what this design was built to avoid), /calculate now signs its own
+# score with a server-held secret; /credit-intelligence requires and verifies
+# that signature before trusting the score at all. The Frontend already
+# spreads the entire /calculate response verbatim into its /credit-intelligence
+# request body, so the signature travels through with no Frontend change.
+SCORE_SIGNATURE_MAX_AGE_S = int(os.getenv("SCORE_SIGNATURE_MAX_AGE_S", str(24 * 3600)))
+
+
+def _sign_score(score, lat, lng, issued_at: float) -> str:
+    msg = f"{score}:{round(float(lat), 5)}:{round(float(lng), 5)}:{int(issued_at)}"
+    return hmac_lib.new(auth_service.JWT_SECRET.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _verify_score_signature(body: dict) -> bool:
+    sig = body.get("_score_sig")
+    issued_at = body.get("_score_sig_ts")
+    score = body.get("score")
+    coords = body.get("coordinates") or {}
+    lat, lng = coords.get("lat"), coords.get("lng")
+    if not sig or issued_at is None or score is None or lat is None or lng is None:
+        return False
+    try:
+        if time.time() - float(issued_at) > SCORE_SIGNATURE_MAX_AGE_S:
+            return False
+        expected = _sign_score(score, lat, lng, issued_at)
+    except (TypeError, ValueError):
+        return False
+    return hmac_lib.compare_digest(sig, expected)
 
 
 def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) -> dict:
@@ -467,6 +506,10 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
         ai_insight = None
 
     response_payload["ai_insight"] = ai_insight
+
+    issued_at = time.time()
+    response_payload["_score_sig"] = _sign_score(result["final_score"], lat, lng, issued_at)
+    response_payload["_score_sig_ts"] = issued_at
     return response_payload
 
 
@@ -1174,6 +1217,8 @@ def credit_intelligence_route():
     body = request.get_json(silent=True) or {}
     if not body or "score" not in body:
         return jsonify({"error": "Request body must be a /calculate response (must include 'score')"}), 400
+    if not _verify_score_signature(body):
+        return jsonify({"error": "Score signature missing, invalid, or stale — resubmit the exact, unmodified object /calculate returned."}), 400
 
     try:
         coords = body.get("coordinates", {})

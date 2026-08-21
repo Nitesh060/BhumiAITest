@@ -1392,13 +1392,6 @@ body {
     padding-left: 18px;
 }
 
-.diag-trained-model-note {
-    margin: 8px 0 0;
-    font-size: 0.68rem;
-    color: var(--text-dim);
-    line-height: 1.4;
-}
-
 /* ---------------------------------------------------------------------- */
 /* Spectral Intelligence modal                                            */
 /* ---------------------------------------------------------------------- */

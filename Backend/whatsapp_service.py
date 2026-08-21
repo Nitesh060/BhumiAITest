@@ -43,13 +43,27 @@ def _get_session(wa_id: str) -> Dict[str, Any]:
     return SESSIONS[wa_id]
 
 
+_ENVIRONMENT = os.getenv("ENVIRONMENT", os.getenv("FLASK_ENV", "development")).lower()
+
+
 def _signature_valid(raw_body: bytes) -> bool:
-    """Validate Meta's signature. If no app secret is configured, keep the
-    existing development/test setup working but log a warning. Production
-    should always set WHATSAPP_APP_SECRET.
+    """Validate Meta's signature.
+
+    A missing WHATSAPP_APP_SECRET used to fail OPEN (return True
+    unconditionally) — anyone could POST a forged webhook payload as if
+    from Meta, with the WhatsApp Copilot processing it (and replying,
+    consuming Gemini/Earth-Engine calls) as a genuine user message. In
+    production this now fails CLOSED: no secret configured means no
+    request is accepted, full stop. The lenient behavior is kept only for
+    local/dev (same ENVIRONMENT-gated pattern auth_service.py already
+    uses for JWT_SECRET), so a developer without the secret configured
+    can still exercise the webhook locally.
     """
     if not WHATSAPP_APP_SECRET:
-        logger.warning("WHATSAPP_APP_SECRET not configured; webhook signature validation is disabled")
+        if _ENVIRONMENT in {"production", "prod"}:
+            logger.error("WHATSAPP_APP_SECRET not configured in production — rejecting webhook request")
+            return False
+        logger.warning("WHATSAPP_APP_SECRET not configured; webhook signature validation is disabled (non-production only)")
         return True
     supplied = request.headers.get("X-Hub-Signature-256", "")
     if not supplied.startswith("sha256="):

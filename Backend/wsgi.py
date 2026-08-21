@@ -167,7 +167,6 @@ app_module.fetch_spei_proxy = _seasonal_spei
 MAX_REQUEST_BYTES = int(os.getenv("MAX_REQUEST_BYTES", str(2 * 1024 * 1024)))
 RATE_WINDOW_SECONDS = int(os.getenv("RATE_WINDOW_SECONDS", "60"))
 RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
-ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "").strip()
 EXPENSIVE_PATHS = {
     "/calculate", "/comprehensive-score", "/diagnose", "/spectral", "/spectral-indices", "/sar-moisture",
     "/historical-timeline", "/before-after", "/vegetation-heatmap", "/ndvi-heatmap", "/crop-intelligence",
@@ -212,10 +211,18 @@ def middleware(environ, start_response):
         return _response(start_response, "429 Too Many Requests", '{"error":"Rate limit exceeded. Please wait before retrying."}', [("Retry-After", str(RATE_WINDOW_SECONDS))])
 
     def secured_start_response(status, headers, exc_info=None):
-        filtered = [(k, v) for k, v in headers if k.lower() not in {"server", "access-control-allow-origin", "access-control-allow-credentials"}]
-        origin = environ.get("HTTP_ORIGIN")
-        if ALLOWED_ORIGIN and origin == ALLOWED_ORIGIN:
-            filtered.append(("Access-Control-Allow-Origin", ALLOWED_ORIGIN)); filtered.append(("Vary", "Origin"))
+        # Only strip the "Server" header (info-leak hardening) — CORS
+        # headers are left exactly as Flask-CORS set them. This used to
+        # also strip Access-Control-Allow-Origin/-Credentials and only
+        # re-add them for a single exact-match ALLOWED_ORIGIN, which broke
+        # the Frontend entirely whenever that env var wasn't set (every
+        # cross-origin response silently lost its CORS header — the
+        # "Failed to fetch" bug documented in wsgi_render.py). app.py's own
+        # CORS(app, resources=...) now reads the same ALLOWED_ORIGIN env
+        # var and is the single source of truth for which origins are
+        # allowed — this middleware no longer needs to duplicate that
+        # logic, just add the extra hardening headers on top of it.
+        filtered = [(k, v) for k, v in headers if k.lower() != "server"]
         filtered.extend([
             ("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "SAMEORIGIN"),
             ("Referrer-Policy", "strict-origin-when-cross-origin"),

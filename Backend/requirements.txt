@@ -5,9 +5,10 @@
 # nothing in the running app imports them (grep-confirmed) — they were
 # only bloating build time/size on Render's free tier and had nothing to
 # do with the actual OOM crash. torch/numpy/Pillow are still used by the
-# offline training scripts (train_land_cover.py, generate_synthetic_dataset.py)
-# — install those two locally / in a separate training environment if you
-# run those scripts, they don't belong in the deployed web service.
+# offline training scripts (train_land_cover.py, generate_synthetic_dataset.py,
+# train_plant_disease.py — the last one also needs torchvision) — install
+# those locally / in a separate training environment (e.g. Google Colab)
+# if you run those scripts, they don't belong in the deployed web service.
 Flask
 flask-cors
 earthengine-api

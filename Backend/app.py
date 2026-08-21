@@ -18,10 +18,31 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 
+import io
+
 from earth_engine_service import fetch_farm_data, initialise_earth_engine, fetch_farm_location_thumbnail
 from scoring import calculate_score
 from crop_recommendation import recommend_crop
 from gemini_service import generate_insight, generate_chat_reply, diagnose_crop_image, generate_spectral_insight, generate_farm_advisor, generate_risk_analysis
+
+try:
+    # Real trained-model cross-check for /diagnose, alongside Gemini's
+    # general-purpose vision call — see ROADMAP.md Phase 14 and
+    # plant_disease_model.py. Guarded because torch/torchvision are a
+    # real deploy-size/memory cost (this app has hit a Render free-tier
+    # OOM from oversized deps once before — see requirements.txt) —
+    # if the import ever fails in some environment, /diagnose should
+    # still work with Gemini alone rather than the whole app failing to
+    # start.
+    import plant_disease_model
+    from PIL import Image as PILImage
+except Exception:
+    plant_disease_model = None
+    PILImage = None
+    logging.getLogger(__name__).warning(
+        "plant_disease_model unavailable (torch/torchvision/Pillow not installed?) "
+        "— trained-model diagnosis cross-check disabled, Gemini diagnosis still works"
+    )
 from spectral_service import calculate_spectral_intelligence
 from enrichment_service import (
     fetch_soil_type,
@@ -808,12 +829,38 @@ ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_IMAGE_BYTES = 6 * 1024 * 1024  # 6 MB
 
 
+def _attach_trained_model_prediction(result: dict, image_bytes: bytes) -> None:
+    """Best-effort: augments a Gemini diagnosis result with our own
+    trained MobileNetV2 classifier's independent prediction (see
+    plant_disease_model.py / ROADMAP.md Phase 14), as a cross-check
+    against Gemini's general-purpose read of the same photo.
+
+    Mutates `result` in place, adding a "trained_model_prediction" key
+    only when a real prediction is available. Never raises — a missing
+    checkpoint, a corrupt image, or torch being unavailable should only
+    ever mean this extra field is omitted, never that /diagnose fails
+    or drops the Gemini result it already has.
+    """
+    if plant_disease_model is None:
+        return
+    try:
+        image = PILImage.open(io.BytesIO(image_bytes))
+        prediction = plant_disease_model.classify_image(image)
+        if prediction is not None:
+            result["trained_model_prediction"] = prediction
+    except Exception:
+        logger.exception("Trained plant-disease model inference failed (non-fatal)")
+
+
 @app.route("/diagnose", methods=["POST"])
 def diagnose():
     """Crop disease diagnosis from an uploaded photo (multipart/form-data,
     field name 'image'). Uses Gemini's real vision capability — not a
     fabricated model. Always includes an explicit confidence level and a
-    caveat that this isn't a substitute for expert advice.
+    caveat that this isn't a substitute for expert advice. Additionally
+    attaches an independent trained-model prediction (MobileNetV2 on
+    PlantVillage) as "trained_model_prediction" when that model is
+    available — a second, differently-sourced opinion on the same photo.
     """
     if "image" not in request.files:
         return jsonify({"error": "No 'image' file in request"}), 400
@@ -844,6 +891,8 @@ def diagnose():
         return jsonify({
             "error": "AI diagnosis is currently unavailable. Check that GEMINI_API_KEY is configured."
         }), 503
+
+    _attach_trained_model_prediction(result, image_bytes)
 
     return jsonify(result), 200
 

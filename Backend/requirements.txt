@@ -1,14 +1,26 @@
 # Core web app (Backend/app.py and everything it imports) — the only
 # things the deployed Render service actually needs. Kept lean on purpose:
-# torch, pandas, scikit-learn, opencv-python-headless, google-genai,
-# matplotlib, Pillow and a top-level numpy pin were removed because
-# nothing in the running app imports them (grep-confirmed) — they were
-# only bloating build time/size on Render's free tier and had nothing to
-# do with the actual OOM crash. torch/numpy/Pillow are still used by the
-# offline training scripts (train_land_cover.py, generate_synthetic_dataset.py,
-# train_plant_disease.py — the last one also needs torchvision) — install
-# those locally / in a separate training environment (e.g. Google Colab)
-# if you run those scripts, they don't belong in the deployed web service.
+# pandas, scikit-learn, opencv-python-headless, google-genai, matplotlib,
+# and a top-level numpy pin were removed because nothing in the running
+# app imports them (grep-confirmed) — they were only bloating build
+# time/size on Render's free tier and had nothing to do with the actual
+# OOM crash. numpy is still used by the offline training scripts
+# (train_land_cover.py, generate_synthetic_dataset.py) — install it
+# locally / in a separate training environment if you run those.
+#
+# torch/torchvision/Pillow ARE deployed now (unlike the note above) —
+# app.py imports plant_disease_model.py for /diagnose's trained-model
+# prediction (see ROADMAP.md Phase 14). The CPU-only wheel index below
+# is deliberate: the default PyPI torch wheel bundles CUDA and is far
+# larger than this CPU-only Render dyno needs. That import is guarded
+# with a try/except in app.py, so if these three ever fail to install
+# in some environment, the app still starts — /diagnose just falls back
+# to Gemini-only. Given this repo's prior Render free-tier OOM history,
+# watch memory after deploying this — a plan upgrade may be needed.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+Pillow
 Flask
 flask-cors
 earthengine-api

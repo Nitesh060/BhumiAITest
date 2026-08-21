@@ -386,8 +386,22 @@ async function overpassQuery(query, endpoint) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
     try {
+        // Content-Type must be explicit: without it, fetch() defaults a
+        // plain-string body to `text/plain`, but Overpass's `data=`
+        // parameter is a form field and expects
+        // `application/x-www-form-urlencoded`. With the wrong
+        // Content-Type, Overpass rejected the body outright with 406 Not
+        // Acceptable on every single request (confirmed via DevTools —
+        // Network tab showed 406 from overpass-api.de on 6/6 calls,
+        // identical on the kumi.systems fallback). That 406 response
+        // itself carries no CORS headers, which is why the browser
+        // additionally reported it as a CORS violation instead of
+        // surfacing the real 406 — a red herring that made this look
+        // like a transient network/CORS issue rather than a malformed
+        // request.
         const res = await fetch(endpoint, {
             method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: "data=" + encodeURIComponent(query),
             signal: controller.signal,
         });

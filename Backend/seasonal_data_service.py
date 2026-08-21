@@ -6,7 +6,11 @@ from typing import Any, Dict, Optional
 
 import ee
 
-from earth_engine_service import _get_region, _reduce_mean, initialise_earth_engine, S2_MAX_CLOUD_PCT
+from earth_engine_service import (
+    _get_region, _reduce_mean_with_retry, _scaled_region,
+    initialise_earth_engine, S2_MAX_CLOUD_PCT,
+    CHIRPS_SCALE_M, MODIS_LST_SCALE_M, ERA5_LAND_SCALE_M,
+)
 
 S2 = "COPERNICUS/S2_SR_HARMONIZED"
 S1 = "COPERNICUS/S1_GRD"
@@ -88,25 +92,57 @@ def _season_sar(region, start: str, end: str) -> Dict[str, Optional[float]]:
     return {"vv": vv, "vh": vh, "vh_vv": vh_lin / vv_lin if vv_lin else None, "rvi": 4 * vh_lin / (vv_lin + vh_lin) if (vv_lin + vh_lin) else None}
 
 
-def _season_weather(region, start: str, end: str) -> Dict[str, Optional[float]]:
-    rain = _reduce_mean(ee.ImageCollection(CHIRPS).filterDate(start, end).filterBounds(region).select("precipitation").mean(), region, 5566)
-    temp_coll = ee.ImageCollection(MODIS).filterDate(start, end).filterBounds(region).select("LST_Day_1km")
-    temp = _reduce_mean(temp_coll.mean().multiply(0.02).subtract(273.15), region, 1000)
-    solar = _reduce_mean(ee.ImageCollection(ERA5).filterDate(start, end).filterBounds(region).select("surface_solar_radiation_downwards_sum").mean(), region, 10000)
+def _season_weather(lat: float, lng: float, polygon: Optional[dict], start: str, end: str) -> Dict[str, Optional[float]]:
+    """Root cause of Rainfall/Solar Radiation always showing "no data" on
+    the live dashboard: this used to reduce against the bare `region`
+    from `_get_region()` — a ~30m point buffer (or a small farm
+    polygon) — regardless of the dataset's own pixel size. Earth
+    Engine's weighted `ee.Reducer.mean()` only counts a pixel if the
+    reduceRegion() geometry covers at least ~0.4% of that pixel's area
+    (see earth_engine_service._min_scale_buffer_m's docstring). CHIRPS's
+    pixel is ~5.5km and ERA5-Land's is ~11km, so a 30m buffer covers a
+    tiny fraction of a percent of either — rainfall and solar radiation
+    reduced to None on essentially every request. MODIS's ~1km pixel
+    (temperature/GDD) just barely cleared that floor, which is why GDD
+    and LST kept working while rainfall/solar didn't, even though all
+    four came from the same function. Switched to `_scaled_region` /
+    `_reduce_mean_with_retry` — the exact fix already proven for these
+    same three datasets in weather_indices_service.py — so every
+    reduction gets a region sized to its own dataset's pixel scale
+    instead of one sized for Sentinel-1/2's much finer 10-20m pixels.
+    """
+    chirps_region = _scaled_region(lat, lng, polygon, CHIRPS_SCALE_M)
+    modis_region = _scaled_region(lat, lng, polygon, MODIS_LST_SCALE_M)
+    era5_region = _scaled_region(lat, lng, polygon, ERA5_LAND_SCALE_M)
+
+    rain_img = ee.ImageCollection(CHIRPS).filterDate(start, end).filterBounds(chirps_region).select("precipitation").mean()
+    rain = _reduce_mean_with_retry(rain_img, lat, lng, polygon, CHIRPS_SCALE_M)
+
+    temp_coll = ee.ImageCollection(MODIS).filterDate(start, end).filterBounds(modis_region).select("LST_Day_1km")
+    temp = _reduce_mean_with_retry(temp_coll.mean().multiply(0.02).subtract(273.15), lat, lng, polygon, MODIS_LST_SCALE_M)
+
+    solar_img = ee.ImageCollection(ERA5).filterDate(start, end).filterBounds(era5_region).select("surface_solar_radiation_downwards_sum").mean()
+    solar = _reduce_mean_with_retry(solar_img, lat, lng, polygon, ERA5_LAND_SCALE_M)
     solar_mj = solar / 1_000_000 if solar is not None else None
+
     gdd_img = temp_coll.map(lambda img: img.multiply(0.02).subtract(273.15).subtract(10).max(0)).sum()
-    gdd = _reduce_mean(gdd_img, region, 1000)
+    gdd = _reduce_mean_with_retry(gdd_img, lat, lng, polygon, MODIS_LST_SCALE_M)
     return {"rainfall": rain, "lst": temp, "solar_radiation": solar_mj, "gdd": gdd}
 
 
-def _season_spi(region, start: str, end: str, history_years: int = 5) -> Optional[float]:
+def _season_spi(lat: float, lng: float, polygon: Optional[dict], start: str, end: str, history_years: int = 5) -> Optional[float]:
+    """Same _get_region/_reduce_mean pixel-coverage bug as _season_weather
+    (CHIRPS's ~5.5km pixel vs a ~30m region) — switched to
+    _scaled_region/_reduce_mean_with_retry for the same reason."""
     s, e = date.fromisoformat(start), date.fromisoformat(end)
     duration = (e - s).days
+    chirps_region = _scaled_region(lat, lng, polygon, CHIRPS_SCALE_M)
     totals = []
     for i in range(history_years + 1):
         sy = date(s.year - i, s.month, s.day)
         ey = sy + timedelta(days=duration)
-        val = _reduce_mean(ee.ImageCollection(CHIRPS).filterDate(sy.isoformat(), ey.isoformat()).filterBounds(region).sum(), region, 5566)
+        img = ee.ImageCollection(CHIRPS).filterDate(sy.isoformat(), ey.isoformat()).filterBounds(chirps_region).sum()
+        val = _reduce_mean_with_retry(img, lat, lng, polygon, CHIRPS_SCALE_M)
         if val is not None:
             totals.append(float(val))
     if len(totals) < 4:
@@ -117,15 +153,22 @@ def _season_spi(region, start: str, end: str, history_years: int = 5) -> Optiona
     return round((current - mean) / sd, 2) if sd else None
 
 
-def _season_spei(region, start: str, end: str, history_years: int = 5) -> Optional[float]:
+def _season_spei(lat: float, lng: float, polygon: Optional[dict], start: str, end: str, history_years: int = 5) -> Optional[float]:
+    """Same pixel-coverage bug as _season_weather/_season_spi for the
+    CHIRPS component (the MODIS component's ~1km pixel already cleared
+    the coverage floor even with the old unscaled region, same as GDD/LST)."""
     s, e = date.fromisoformat(start), date.fromisoformat(end)
     duration = (e - s).days
+    chirps_region = _scaled_region(lat, lng, polygon, CHIRPS_SCALE_M)
+    modis_region = _scaled_region(lat, lng, polygon, MODIS_LST_SCALE_M)
     balances = []
     for i in range(history_years + 1):
         sy = date(s.year - i, s.month, s.day)
         ey = sy + timedelta(days=duration)
-        rain = _reduce_mean(ee.ImageCollection(CHIRPS).filterDate(sy.isoformat(), ey.isoformat()).filterBounds(region).sum(), region, 5566)
-        temp = _reduce_mean(ee.ImageCollection(MODIS).filterDate(sy.isoformat(), ey.isoformat()).filterBounds(region).select("LST_Day_1km").mean().multiply(0.02).subtract(273.15), region, 1000)
+        rain_img = ee.ImageCollection(CHIRPS).filterDate(sy.isoformat(), ey.isoformat()).filterBounds(chirps_region).sum()
+        rain = _reduce_mean_with_retry(rain_img, lat, lng, polygon, CHIRPS_SCALE_M)
+        temp_img = ee.ImageCollection(MODIS).filterDate(sy.isoformat(), ey.isoformat()).filterBounds(modis_region).select("LST_Day_1km").mean().multiply(0.02).subtract(273.15)
+        temp = _reduce_mean_with_retry(temp_img, lat, lng, polygon, MODIS_LST_SCALE_M)
         if rain is None or temp is None:
             continue
         t = max(float(temp), 0.1)
@@ -152,13 +195,17 @@ def fetch_seasonal_comprehensive_data(lat: float, lng: float, polygon: Optional[
     windows = latest_season_windows()
     season_results = {}
     for season, meta in windows.items():
+        # Sentinel-1/2 (10-20m native pixels) stay on the plain `region` —
+        # even a small point buffer covers plenty of pixels at that
+        # resolution, which is exactly why these never showed the
+        # no-data bug the CHIRPS/ERA5/MODIS-based fields below did.
         optical = _season_optical(region, meta["start"], meta["end"])
         sar = _season_sar(region, meta["start"], meta["end"])
-        weather = _season_weather(region, meta["start"], meta["end"])
+        weather = _season_weather(lat, lng, polygon, meta["start"], meta["end"])
         season_results[season] = {
             **meta, **optical, **sar, **weather,
-            "spi": _season_spi(region, meta["start"], meta["end"]),
-            "spei": _season_spei(region, meta["start"], meta["end"]),
+            "spi": _season_spi(lat, lng, polygon, meta["start"], meta["end"]),
+            "spei": _season_spei(lat, lng, polygon, meta["start"], meta["end"]),
         }
 
     keys = ["ndvi", "evi", "savi", "msavi", "ndre", "ndmi", "ndwi", "ci_green", "ci_rededge",

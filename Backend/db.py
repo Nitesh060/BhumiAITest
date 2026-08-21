@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import os
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,32 @@ def get_session():
     return _SessionLocal()
 
 
+def _ensure_token_version_column(engine) -> None:
+    """Additive, idempotent migration for User.token_version (added for
+    logout/token-revocation support — see auth_service.py).
+
+    This app has no Alembic/migration framework, and
+    Base.metadata.create_all() only creates tables that don't exist
+    yet — it never alters an EXISTING table to add a column a newer
+    model version defines. Without this, a database that already has a
+    `users` table (i.e. any live deployment with real registered users)
+    would silently NOT get this column, and every query touching User
+    rows would then fail with a real SQL error on the next deploy —
+    breaking login/auth entirely. Safe to call on every startup: it
+    only runs the ALTER TABLE once, the first time it finds the column
+    missing, and never touches anything else.
+    """
+    inspector = inspect(engine)
+    if "users" not in inspector.get_table_names():
+        return  # brand-new DB — create_all() above already built it with this column
+    existing_columns = {c["name"] for c in inspector.get_columns("users")}
+    if "token_version" in existing_columns:
+        return
+    logger.info("Auto-migrating: adding users.token_version column (existing table predates it)")
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0"))
+
+
 def init_db():
     """Creates all tables if they don't exist yet. Safe to call on
     every app startup — no-op if tables already exist. No-op (with a
@@ -79,6 +105,7 @@ def init_db():
     import models  # noqa: F401 — registers models on Base before create_all
     try:
         Base.metadata.create_all(bind=_engine)
+        _ensure_token_version_column(_engine)
         logger.info("Database tables verified/created")
     except Exception:
         logger.exception("init_db() failed — Farm Management features may not work")

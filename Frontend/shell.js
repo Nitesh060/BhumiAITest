@@ -65,6 +65,19 @@ function bhumiGetUser() {
 }
 
 function bhumiLogout() {
+    // Best-effort: invalidate this token server-side (see
+    // auth_service.bump_token_version) so it can't keep authenticating
+    // if it leaks after this device clears it — e.g. from a browser
+    // history/cache snapshot, or a proxy log. Never blocks the actual
+    // logout on this call succeeding; a network failure here just means
+    // the token still expires normally on its own.
+    const token = bhumiGetToken();
+    if (token) {
+        fetch(`${BHUMI_API_BASE_URL}/auth/logout`, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${token}` },
+        }).catch(() => {});
+    }
     localStorage.removeItem("bhumi_token");
     localStorage.removeItem("bhumi_user");
     window.location.href = "login.html";

@@ -106,6 +106,12 @@ via the current general-purpose vision model can be evaluated as-is.
 - Sign input-company partners and define referral-margin commercial terms.
 - Only then build the SKU catalogue, order flow, and fulfillment — no
   commerce code before the partnerships exist.
+- `Backend/plant_disease_model.py` + `Backend/train_plant_disease.py` add a
+  real trained-model path (MobileNetV2 transfer learning on the
+  PlantVillage dataset) as an alternative to the current Gemini call —
+  ships untrained; run `train_plant_disease.py` yourself (needs a GPU +
+  internet budget this repo's Render deployment doesn't carry, so use
+  Colab or a local machine) to produce the checkpoint.
 
 ---
 

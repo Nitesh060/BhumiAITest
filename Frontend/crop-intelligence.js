@@ -2,11 +2,8 @@ const API_BASE_URL =
     window.FARMSCORE_API_URL ||
     "https://bhumiaitest.onrender.com";
 
-function escapeHTML(value) {
-    return String(value ?? "—").replace(/[&<>'"]/g, ch => ({
-        "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"
-    }[ch]));
-}
+// escapeHTML is defined once in shell.js (loaded before this file on
+// every page) — no longer duplicated here.
 
 function row(icon, label, value) {
     return `<div class="enrichment-row"><span class="er-icon">${escapeHTML(icon)}</span><span class="er-label">${escapeHTML(label)}</span><span class="er-value">${escapeHTML(value)}</span></div>`;

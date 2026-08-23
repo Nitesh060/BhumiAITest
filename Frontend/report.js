@@ -244,6 +244,9 @@ async function init() {
     // remains as a fallback.
     await refreshLatestCroppingHistory(data);
 
+    renderBhumiSeasonalScore(document.getElementById("bhumi-seasonal-score-card"), data.enrichment?.seasonal_score);
+    renderBhumiScoreLegend(document.getElementById("bss-legend"));
+
     renderFarmDetails(data);
     renderScoreEvidence(data);
     renderEnrichment(data);

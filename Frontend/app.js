@@ -835,6 +835,9 @@ function renderResult(data) {
     document.getElementById("final-score").textContent = score;
     updateRing(score);
 
+    // ---- Bhumi Seasonal Score (Base + Kharif + Rabi composite) ----
+    renderBhumiSeasonalScore(document.getElementById("bhumi-seasonal-score-card"), data.enrichment?.seasonal_score);
+
     // ---- Grade badge ----
     const gs = gradeStyle(grade);
     const gradeEl = document.getElementById("score-grade");

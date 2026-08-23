@@ -229,3 +229,55 @@ class Farm(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class GroundTruthObservation(Base):
+    """A field officer's real, observed crop identity and yield for one
+    farm-season — optionally with a photo. Matches ROADMAP.md Phase 8:
+    every trained ML model this platform wants (Phase 11's real M1
+    crop-ID and M3 yield models, replacing today's heuristics) needs a
+    labeled dataset that doesn't exist yet, and there was previously no
+    capture pipeline for it at all. Every row here is one farm-season
+    closer to that dataset.
+
+    Photos are stored as base64 in Postgres directly (capped at
+    ground_truth_service.MAX_PHOTO_BYTES) rather than a proper object
+    store (S3 etc.) — this app has none configured, and standing one up
+    is a bigger, separate piece of infrastructure than this bootstrap
+    form needs. Fine for the first few hundred farm-season records
+    Phase 11 needs; revisit before this needs to hold thousands of
+    photos.
+    """
+    __tablename__ = "ground_truth_observations"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    farm_id = Column(String, ForeignKey("farms.id"), nullable=False, index=True)
+    recorded_by_user_id = Column(String, nullable=True)
+    crop = Column(String, nullable=False)
+    season = Column(String, nullable=True)  # "kharif" | "rabi"
+    sowing_date = Column(DateTime, nullable=True)
+    harvest_date = Column(DateTime, nullable=True)
+    observed_yield_kg_per_acre = Column(Float, nullable=True)
+    notes = Column(Text, nullable=True)
+    photo_data_b64 = Column(Text, nullable=True)
+    photo_mime_type = Column(String, nullable=True)
+    created_at = Column(DateTime, default=_now, index=True)
+
+    def to_dict(self, include_photo: bool = False):
+        d = {
+            "id": self.id,
+            "farm_id": self.farm_id,
+            "recorded_by_user_id": self.recorded_by_user_id,
+            "crop": self.crop,
+            "season": self.season,
+            "sowing_date": self.sowing_date.isoformat() if self.sowing_date else None,
+            "harvest_date": self.harvest_date.isoformat() if self.harvest_date else None,
+            "observed_yield_kg_per_acre": self.observed_yield_kg_per_acre,
+            "notes": self.notes,
+            "has_photo": bool(self.photo_data_b64),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+        if include_photo and self.photo_data_b64:
+            d["photo_data_b64"] = self.photo_data_b64
+            d["photo_mime_type"] = self.photo_mime_type
+        return d

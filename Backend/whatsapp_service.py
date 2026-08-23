@@ -111,7 +111,7 @@ def _format_score_summary(result: Dict[str, Any]) -> str:
     components = result.get("components", {})
     crops = result.get("recommended_crops") or []
     climate = result.get("climate_risk", {})
-    lines = [f"🌱 *Bhumi AI Score: {score}/900 — {grade}*"]
+    lines = [f"🌱 *Bhumi AI Score: {score}/1000 — {grade}*"]
     if confidence:
         lines.append(f"Confidence: {confidence} (provisional until ground-truth calibration)")
     lines += [f"📍 {coords.get('lat')}° N, {coords.get('lng')}° E", "", "*Key factors:*"]

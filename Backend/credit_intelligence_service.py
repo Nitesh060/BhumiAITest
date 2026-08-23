@@ -100,9 +100,9 @@ def compute_bcis_score(farmscore: Optional[int], climate_risk_level: Optional[st
     drivers = []
     components = {}
 
-    # FarmScore inverted: 300-900 scale -> 0-100 risk (higher FarmScore = lower risk)
+    # FarmScore inverted: 400-1000 scale -> 0-100 risk (higher FarmScore = lower risk)
     if farmscore is not None:
-        farmscore_risk = round((900 - farmscore) / (900 - 300) * 100)
+        farmscore_risk = round((1000 - farmscore) / (1000 - 400) * 100)
         farmscore_risk = max(0, min(100, farmscore_risk))
     else:
         farmscore_risk = 50  # neutral if unknown

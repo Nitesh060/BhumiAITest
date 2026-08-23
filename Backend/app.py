@@ -80,7 +80,7 @@ from crop_intelligence_service import (
     detect_crop_rotation,
     CROP_CALENDAR,
 )
-from seasonal_score_service import compute_seasonal_performance_score
+from seasonal_score_service import compute_farmscore as compute_farmscore_from_seasons
 from enrichment_service import fetch_cropping_intensity as _fetch_cropping_intensity_for_ci
 from enrichment_service import fetch_cropping_history as _fetch_cropping_history_for_ci
 from weather_soil_terrain_service import (
@@ -241,8 +241,11 @@ def _verify_score_signature(body: dict) -> bool:
 # Every parameter below is recomputed as an average of the latest
 # available Kharif and Rabi seasons (see seasonal_data_service.py)
 # rather than the single rolling window the "real" per-parameter
-# functions imported above use. The 20-parameter FarmScore formula
-# itself is unchanged — only these inputs are seasonally averaged.
+# functions imported above use. This blended vector now feeds only the
+# non-score uses (crop recommendation, climate risk, data-availability
+# reasons) — the FarmScore itself is computed from Kharif and Rabi
+# separately (see compute_farmscore's Base+Kharif+Rabi combination,
+# below, via seasonal_score_service.compute_farmscore).
 #
 # SPEI is a deliberate exception: it keeps using the real
 # weather_indices_service.fetch_spei (CSIC SPEIbase, falling back to a
@@ -396,9 +399,14 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
     Raises on hard failures (satellite fetch / scoring); callers decide
     how to surface that (HTTP error vs a WhatsApp text reply).
 
-    FarmScore (final_score, 300-900) is now computed from the full
-    20-parameter comprehensive model (Vegetation + Radar + Weather +
-    Temperature) — see scoring.py / comprehensive_score_service.py.
+    FarmScore (final_score, 400-1000) is Base + Average Kharif Score +
+    Average Rabi Score — see seasonal_score_service.compute_farmscore.
+    Kharif/Rabi each run the full 20-parameter comprehensive model
+    (Vegetation + Radar + Weather + Temperature — see
+    comprehensive_score_service.py) scoped to that season's own
+    satellite/weather values; Base comes from irrigation + cropping
+    intensity. There is deliberately only this one FarmScore — no
+    separate "seasonal" score alongside it.
     Groundwater is fetched here only for crop_recommendation.py (which
     still uses the original 5-input signature) — it does NOT feed the
     score anymore, by explicit design choice.
@@ -438,6 +446,11 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
             score_pool.submit(_safe_score_fetch, "spi", fetch_spi, lat, lng, polygon),
             score_pool.submit(_safe_score_fetch, "gdd", fetch_gdd, lat, lng, polygon),
             score_pool.submit(_safe_score_fetch, "spei", fetch_spei, lat, lng, polygon),
+            # Fetched here (not just in the enrichment pool below) because
+            # the Base Score component of the new Base+Kharif+Rabi
+            # FarmScore needs them before the score itself is computed.
+            score_pool.submit(_safe_score_fetch, "irrigation", fetch_irrigation_signal, lat, lng, polygon),
+            score_pool.submit(_safe_score_fetch, "cropping_intensity", fetch_cropping_intensity, lat, lng, polygon),
         ]
         score_results = {name: val for name, val in (f.result() for f in score_futures)}
 
@@ -448,6 +461,8 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
     spi = score_results.get("spi") or {}
     gdd = score_results.get("gdd") or {}
     spei = score_results.get("spei") or {}
+    irrigation_for_base = score_results.get("irrigation") or {}
+    cropping_intensity_for_base = score_results.get("cropping_intensity") or {}
 
     ndre_val = None
     if spectral_for_score.get("indices", {}).get("nitrogen"):
@@ -476,7 +491,16 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
         "lst": satellite_data.get("lst"),
     }
 
-    result = calculate_score(comprehensive_raw_values)
+    # ---- Base + Kharif + Rabi FarmScore. Kharif/Rabi each run the same
+    # 20-parameter formula above, scoped to just that season's own
+    # values (already computed by fetch_farm_data's seasonal pipeline —
+    # satellite_data["seasonal_analysis"], no extra Earth Engine call).
+    # air_temp has no per-season fetch, so both seasons share the one
+    # value already in comprehensive_raw_values. ----
+    seasonal_analysis = satellite_data.get("seasonal_analysis") or {}
+    kharif_raw_values = {**(seasonal_analysis.get("kharif") or {}), "air_temp": comprehensive_raw_values.get("air_temp")}
+    rabi_raw_values = {**(seasonal_analysis.get("rabi") or {}), "air_temp": comprehensive_raw_values.get("air_temp")}
+    result = compute_farmscore_from_seasons(irrigation_for_base, cropping_intensity_for_base, kharif_raw_values, rabi_raw_values)
 
     # ---- Surface WHY a parameter came back unavailable (debug aid). Each
     # weather-index fetch already computes a human-readable reason when it
@@ -607,8 +631,6 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
         futures = [
             pool.submit(_safe, "soil_type", fetch_soil_type, lat, lng, polygon),
             pool.submit(_safe, "adjacent_land_cover", fetch_adjacent_land_cover, lat, lng, polygon),
-            pool.submit(_safe, "cropping_intensity", fetch_cropping_intensity, lat, lng, polygon),
-            pool.submit(_safe, "irrigation", fetch_irrigation_signal, lat, lng, polygon),
             pool.submit(_safe, "temperature_annual_range", fetch_temperature_annual_range, lat, lng, polygon),
             pool.submit(_safe, "regional_prosperity", fetch_prosperity_proxy, lat, lng, polygon),
             pool.submit(_safe, "nearest_water_body", fetch_nearest_water_body_signal, lat, lng, polygon),
@@ -620,6 +642,11 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
         for f in futures:
             key, val = f.result()
             enrichment[key] = val
+
+    # Already fetched earlier (score_pool) for the Base Score component —
+    # reused here instead of a second Earth Engine call for the same signal.
+    enrichment["irrigation"] = irrigation_for_base
+    enrichment["cropping_intensity"] = cropping_intensity_for_base
 
     # AEZ is cheap (no GEE call) — compute directly from data already fetched
     enrichment["agro_ecological_zone"] = estimate_agro_ecological_zone(
@@ -639,18 +666,10 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
         logger.exception("Per-season crop identification failed (non-fatal)")
         enrichment["crop_history_identified"] = None
 
-    # ---- Bhumi Seasonal Score (Base + Kharif + Rabi composite) — pure
-    # Python over data already fetched above, no extra Earth Engine call.
-    # A distinct, complementary metric from the main FarmScore — see
-    # seasonal_score_service.py's module docstring for why these are
-    # kept separate rather than merged into one number. ----
-    try:
-        enrichment["seasonal_score"] = compute_seasonal_performance_score(
-            enrichment.get("irrigation"), enrichment.get("cropping_intensity"), enrichment.get("cropping_history")
-        )
-    except Exception:
-        logger.exception("Seasonal score computation failed (non-fatal)")
-        enrichment["seasonal_score"] = None
+    # FarmScore's own Base+Kharif+Rabi breakdown (already computed above,
+    # into `result["breakdown"]`) — surfaced here for the frontend's
+    # breakdown panel. Not a second score: same final_score as `result`.
+    enrichment["farmscore_breakdown"] = result.get("breakdown")
 
     # ---- Yield Prediction (formula-based proxy, see yield_prediction.py) ----
     # Uses the top-recommended crop + this farm's own NDVI. Area comes from

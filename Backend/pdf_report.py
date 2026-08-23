@@ -54,8 +54,8 @@ BLACK = colors.HexColor("#222222")
 GRADE_RISK = {
     "Poor": ("Highest Risk", RED),
     "Fair": ("High Risk", ORANGE),
-    "Average": ("Medium Risk", YELLOW),
-    "Good": ("Low Risk", GREEN),
+    "Good": ("Medium Risk", YELLOW),
+    "Very Good": ("Low Risk", GREEN),
     "Excellent": ("Lowest Risk", GREEN_DARK),
 }
 
@@ -86,9 +86,9 @@ def _p(value: Any, style):
 
 def _score(value: Any) -> int:
     try:
-        return max(300, min(900, int(float(value))))
+        return max(400, min(1000, int(float(value))))
     except Exception:
-        return 300
+        return 400
 
 
 def _ref_id(data: Dict[str, Any]) -> str:
@@ -242,25 +242,25 @@ def _water_body_label(water: Dict[str, Any]) -> str:
     return "Not available"
 
 
-def _score_breakdown_section(seasonal: Optional[Dict[str, Any]], s) -> list:
-    """Renders the Base + Kharif + Rabi breakdown — Bhumi's own version
-    of SatSource's "Factors Contributing Towards SatScore" panel. Not
-    the same computation or thresholds as any other product; see
-    seasonal_score_service.py's module docstring for what this is and
-    isn't. Degrades to a clear "not available" note rather than hiding
-    the whole section if the underlying signals are missing.
+def _score_breakdown_section(breakdown: Optional[Dict[str, Any]], s) -> list:
+    """Renders the FarmScore's own Base + Kharif + Rabi breakdown —
+    Bhumi's own version of SatSource's "Factors Contributing Towards
+    SatScore" panel. Not the same computation or thresholds as any
+    other product; see seasonal_score_service.py's module docstring.
+    Degrades to a clear "not available" note rather than hiding the
+    whole section if the underlying signals are missing.
     """
-    story = _section("Bhumi Seasonal Score", s)
-    if not seasonal or not seasonal.get("available"):
-        reason = (seasonal or {}).get("reason", "Insufficient irrigation, cropping-intensity, or historical NDVI signal for this location.")
+    story = _section("FarmScore Breakdown (Base + Kharif + Rabi)", s)
+    if not breakdown or not breakdown.get("available"):
+        reason = (breakdown or {}).get("reason", "Insufficient irrigation, cropping-intensity, or seasonal satellite/weather signal for this location.")
         story.append(Paragraph(f"Not available — {_esc(reason)}", s["Small"]))
         story.append(Spacer(1, 6))
         return story
 
-    overall = seasonal["overall_score"]
-    category = seasonal["category"]
-    risk = seasonal["risk_rating"]
-    filled = max(1, min(20, round(overall / 1000 * 20)))
+    overall = breakdown["overall_score"]
+    category = breakdown["category"]
+    risk = breakdown["risk_rating"]
+    filled = max(1, min(20, round((overall - 400) / 600 * 20)))
     bar = Table([["■" * filled + "□" * (20 - filled)]], colWidths=[75 * mm], rowHeights=[9 * mm])
     bar.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
@@ -288,19 +288,20 @@ def _score_breakdown_section(seasonal: Optional[Dict[str, Any]], s) -> list:
             return [label, "Not available", "—"]
         return [label, f"{comp['grade']} ({comp['score']}/{comp['max_score']})", ""]
 
-    base, kharif, rabi = seasonal["base"], seasonal["kharif"], seasonal["rabi"]
+    base, kharif, rabi = breakdown["base"], breakdown["kharif"], breakdown["rabi"]
     factor_rows = [
         ["FACTOR", "SCORE", "DETAIL"],
         [*_factor_row("Base Score", base)[:2], f"{base.get('irrigation_condition', '—')}, {base.get('cropping_intensity', '—')}" if base.get("data_available") else "—"],
-        [*_factor_row("Average Kharif Score", kharif)[:2], f"{kharif.get('years_used', 0)} season(s) used" if kharif.get("data_available") else "—"],
-        [*_factor_row("Average Rabi Score", rabi)[:2], f"{rabi.get('years_used', 0)} season(s) used" if rabi.get("data_available") else "—"],
+        [*_factor_row("Average Kharif Score", kharif)[:2], f"{kharif.get('parameters_used', 0)} of {kharif.get('parameters_total', 20)} parameters used" if kharif.get("data_available") else "—"],
+        [*_factor_row("Average Rabi Score", rabi)[:2], f"{rabi.get('parameters_used', 0)} of {rabi.get('parameters_total', 20)} parameters used" if rabi.get("data_available") else "—"],
     ]
     story += [_table(factor_rows, [45 * mm, 55 * mm, 74 * mm], s), Spacer(1, 4)]
     story.append(Paragraph(
-        "Bhumi Seasonal Score is an independent, formula-based proxy built from this app's own satellite signals "
-        "(irrigation + cropping intensity for Base; multi-year Kharif/Rabi NDVI for the seasonal scores). "
-        "It is NOT validated against real harvested-yield ground truth and is distinct from the main FarmScore above, "
-        "which measures current land-condition suitability rather than multi-year seasonal performance.",
+        "The Bhumi AI FarmScore above is this Base + Average Kharif Score + Average Rabi Score composite, rescaled to "
+        "a 400-1000 final score. Base comes from irrigation + cropping intensity; Kharif/Rabi each run the same "
+        "transparent 20-parameter suitability formula (see \"FarmScore & Parameter Evidence\" above) scoped to that "
+        "season's own satellite/weather data. It is a formula-based proxy, NOT validated against real harvested-yield "
+        "ground truth.",
         s["Tiny"]))
     story.append(Spacer(1, 6))
     return story
@@ -318,7 +319,7 @@ def _score_page(data, s):
 
     # Visual score bar: no matplotlib, no temporary files, and therefore no
     # external rendering dependency.
-    filled = max(1, min(20, round((score - 300) / 600 * 20)))
+    filled = max(1, min(20, round((score - 400) / 600 * 20)))
     score_bar = Table([["■" * filled + "□" * (20 - filled)]], colWidths=[75 * mm], rowHeights=[9 * mm])
     score_bar.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
@@ -329,8 +330,8 @@ def _score_page(data, s):
     ]))
 
     summary = [
-        [score_bar, Paragraph(f"<b>{score}/900</b><br/><font color='{risk_color.hexval()}'>{_esc(grade)} - {_esc(risk)}</font>", s["Body8"])],
-        [Paragraph("Bhumi AI suitability / condition index", s["Small"]), Paragraph("300-900 scale", s["Small"])],
+        [score_bar, Paragraph(f"<b>{score}/1000</b><br/><font color='{risk_color.hexval()}'>{_esc(grade)} - {_esc(risk)}</font>", s["Body8"])],
+        [Paragraph("Bhumi AI suitability / condition index", s["Small"]), Paragraph("400-1000 scale", s["Small"])],
     ]
     st = Table(summary, colWidths=[100 * mm, 74 * mm])
     st.setStyle(TableStyle([
@@ -364,14 +365,14 @@ def _score_page(data, s):
     # LayoutError and produced the HTTP 500 seen by the frontend.
     story += [_table(details, [9 * mm, 38 * mm, 25 * mm, 26 * mm, 28 * mm, 28 * mm, 20 * mm], s), Spacer(1, 7)]
 
-    story += _score_breakdown_section(enrichment.get("seasonal_score"), s)
+    story += _score_breakdown_section(enrichment.get("farmscore_breakdown"), s)
 
     story += _section("FarmScore & Parameter Evidence", s)
     sources = sorted({str(c.get("source")) for c in components.values() if isinstance(c, dict) and c.get("source")})
     used = sum(1 for c in components.values() if isinstance(c, dict) and c.get("sub_score") is not None)
     evidence = [
         ["ITEM", "VALUE"],
-        ["Bhumi AI Score", f"{score}/900 ({grade})"],
+        ["Bhumi AI Score", f"{score}/1000 ({grade})"],
         ["Parameters Used", f"{used} of {data.get('parameters_total', 20)}"],
         ["Data Sources", " - ".join(sources) if sources else "Not available"],
         ["Interpretation", "Suitability / condition index; not a standalone credit or yield decision"],
@@ -588,11 +589,11 @@ def _colour_ranges(s):
     story = _section("Colour Ranges", s)
     rows = [
         ["CATEGORY", "RISK RATING", "BHUMI FARMSCORE"],
-        ["Poor", "Highest", "300-420"],
-        ["Fair", "High", "421-540"],
-        ["Average", "Medium", "541-660"],
-        ["Good", "Low", "661-780"],
-        ["Excellent", "Lowest", "781-900"],
+        ["Poor", "Highest", "400-625"],
+        ["Fair", "High", "626-725"],
+        ["Good", "Medium", "726-790"],
+        ["Very Good", "Low", "791-870"],
+        ["Excellent", "Lowest", "871-1000"],
     ]
     story += [_table(rows, [58 * mm, 48 * mm, 68 * mm], s), Spacer(1, 7)]
     story.append(Paragraph("Disclaimer: This system-generated report contains parameters processed using remote-sensing and environmental datasets. Crop identification, yield estimates and regional proxies are subject to model and data limitations. Field verification and applicable institutional policy remain necessary.", s["Body7"]))

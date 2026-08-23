@@ -11,14 +11,17 @@ from comprehensive_score_service import compute_comprehensive_score, PARAMETER_L
 
 logger = logging.getLogger(__name__)
 
-_UNITS = {
+# Public (no leading underscore) — reused by seasonal_score_service.py's
+# Base+Kharif+Rabi combiner when it adapts each season's own
+# compute_comprehensive_score() result into the same UI-facing shape.
+UNITS = {
     "ndvi":"", "evi":"", "savi":"", "msavi":"", "ndre":"", "ndmi":"", "ndwi":"",
     "ci_green":"", "ci_rededge":"", "vv":" dB", "vh":" dB", "vh_vv":"", "rvi":"",
     "rainfall":" mm/day", "air_temp":"°C", "solar_radiation":" MJ/m²/day", "spi":"",
     "spei":"", "gdd":" GDD-units", "lst":"°C",
 }
 
-_SOURCES = {
+SOURCES = {
     "ndvi":"Sentinel-2", "evi":"Sentinel-2", "savi":"Sentinel-2", "msavi":"Sentinel-2",
     "ndre":"Sentinel-2 Red Edge", "ndmi":"Sentinel-2", "ndwi":"Sentinel-2",
     "ci_green":"Sentinel-2", "ci_rededge":"Sentinel-2", "vv":"Sentinel-1 SAR",
@@ -27,6 +30,27 @@ _SOURCES = {
     "solar_radiation":"ERA5-Land", "spi":"CHIRPS v3", "spei":"CHIRPS v3 + MODIS LST",
     "gdd":"ERA5-Land", "lst":"MODIS LST",
 }
+
+
+def adapt_components(comp_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Turn a raw compute_comprehensive_score() result's components into
+    the UI-facing shape (unit/source/label attached, weight_pct->weight).
+    Shared by calculate_score() below and by seasonal_score_service.py's
+    per-season (Kharif/Rabi) scoring, so both stay in sync.
+    """
+    components = {}
+    for key, c in comp_result.get("components", {}).items():
+        components[key] = {
+            "raw_value": c["raw_value"],
+            "sub_score": c["sub_score"],
+            "weight": c["weight_pct"],
+            "weighted_contribution": c.get("contribution"),
+            "data_available": c["sub_score"] is not None,
+            "unit": UNITS.get(key, ""),
+            "source": SOURCES.get(key, ""),
+            "label": PARAMETER_LABELS.get(key, key),
+        }
+    return components
 
 
 def calculate_score(raw_values: Dict[str, Optional[float]], weights: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
@@ -46,7 +70,7 @@ def calculate_score(raw_values: Dict[str, Optional[float]], weights: Optional[Di
     if comp_result.get("score_0_100") is None:
         logger.warning("calculate_score: no usable parameters")
         return {
-            "final_score": 300,
+            "final_score": 400,
             "grade": DEFAULT_GRADE,
             "components": {},
             "parameters_used": 0,
@@ -54,23 +78,10 @@ def calculate_score(raw_values: Dict[str, Optional[float]], weights: Optional[Di
             "confidence": "low",
         }
 
-    components = {}
-    for key, c in comp_result["components"].items():
-        components[key] = {
-            "raw_value": c["raw_value"],
-            "sub_score": c["sub_score"],
-            "weight": c["weight_pct"],
-            "weighted_contribution": c.get("contribution"),
-            "data_available": c["sub_score"] is not None,
-            "unit": _UNITS.get(key, ""),
-            "source": _SOURCES.get(key, ""),
-            "label": PARAMETER_LABELS.get(key, key),
-        }
-
     return {
-        "final_score": comp_result["score_300_900"],
+        "final_score": comp_result["score_400_1000"],
         "grade": comp_result["grade"],
-        "components": components,
+        "components": adapt_components(comp_result),
         "parameters_used": comp_result["parameters_used"],
         "parameters_total": comp_result["parameters_total"],
         "confidence": comp_result.get("confidence", "low"),

@@ -51,7 +51,7 @@ function renderScoreEvidence(data) {
     const used = params.filter(([, c]) => c && c.sub_score != null).length;
     const sources = [...new Set(params.map(([, c]) => c.source).filter(Boolean))];
     document.getElementById("score-summary-list").innerHTML = [
-        row("🎯", "Bhumi AI Score", `${data.score}/900 (${data.grade})`),
+        row("🎯", "Bhumi AI Score", `${data.score}/1000 (${data.grade})`),
         row("📐", "Parameters Used", `${used} of ${data.parameters_total || 20}`),
         row("🛰️", "Data Sources", sources.join(" · ") || "—"),
         row("⚠️", "Interpretation", "Suitability / condition index; not a standalone credit or yield decision"),
@@ -237,15 +237,15 @@ async function init() {
 
     document.getElementById("report-empty-state").style.display = "none";
     document.getElementById("report-content").style.display = "block";
-    document.getElementById("report-subtitle").textContent = `${data.coordinates.lat}° N, ${data.coordinates.lng}° E · Score ${data.score}/900 (${data.grade})`;
+    document.getElementById("report-subtitle").textContent = `${data.coordinates.lat}° N, ${data.coordinates.lng}° E · Score ${data.score}/1000 (${data.grade})`;
 
     // Refresh the fixed 2021–2023 history with the latest completed years
     // before rendering the report. If the refresh fails, the cached history
     // remains as a fallback.
     await refreshLatestCroppingHistory(data);
 
-    renderBhumiSeasonalScore(document.getElementById("bhumi-seasonal-score-card"), data.enrichment?.seasonal_score);
-    renderBhumiScoreLegend(document.getElementById("bss-legend"));
+    renderFarmScoreBreakdown(document.getElementById("bhumi-seasonal-score-card"), data.enrichment?.farmscore_breakdown);
+    renderFarmScoreLegend(document.getElementById("bss-legend"));
 
     renderFarmDetails(data);
     renderScoreEvidence(data);

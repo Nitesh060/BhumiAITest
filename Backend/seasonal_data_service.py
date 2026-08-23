@@ -187,8 +187,12 @@ def _season_spei(lat: float, lng: float, polygon: Optional[dict], start: str, en
 def fetch_seasonal_comprehensive_data(lat: float, lng: float, polygon: Optional[dict] = None) -> Dict[str, Any]:
     """Fetch the existing 20 FarmScore parameters for the latest Kharif and Rabi windows.
 
-    The two seasonal parameter vectors are averaged equally for the existing 300–900
-    FarmScore. No Base/Kharif/Rabi 200/400/400 split is introduced here.
+    Returns both a blended `raw_values` vector (the two seasons averaged
+    equally — used for the non-score enrichment fields: crop recommendation,
+    climate risk, data-availability reasons) AND the per-season `seasons`
+    dict (used by app.py to compute the Base+Kharif+Rabi FarmScore itself,
+    via seasonal_score_service.compute_farmscore — see that module for the
+    200/400/400 split).
     """
     initialise_earth_engine()
     region = _get_region(lat, lng, polygon)

@@ -28,23 +28,25 @@ window.FARMSCORE_API_URL = window.FARMSCORE_API_URL || "https://bhumiaitest.onre
 const BHUMI_API_BASE_URL = window.FARMSCORE_API_URL;
 
 /* ===================================================================
-   Bhumi Seasonal Score — shared gauge + rendering, used on both the
+   FarmScore breakdown — shared gauge + rendering, used on both the
    main dashboard (app.js) and the Extended Report page (report.js).
-   Renders enrichment.seasonal_score from /calculate — a Base (0-200) +
-   Average Kharif (0-400) + Average Rabi (0-400) composite scaled to an
-   Overall 0-1000, computed in Backend/seasonal_score_service.py. This
-   is a distinct, complementary metric from the main FarmScore
-   (0-900) — never conflated with it; see that module's docstring.
+   Renders enrichment.farmscore_breakdown from /calculate — the ONE
+   Bhumi AI FarmScore's own composition: Base (0-200) + Average Kharif
+   Score (0-400) + Average Rabi Score (0-400), rescaled to a 400-1000
+   final score (computed in Backend/seasonal_score_service.py). This is
+   NOT a second score — overall_score here always equals the main
+   FarmScore shown elsewhere on the page.
    =================================================================== */
 
-// Matches Backend/seasonal_score_service.py's OVERALL_BANDS exactly —
-// keep both in sync if those thresholds ever change.
-const BHUMI_SEASONAL_SCORE_BANDS = [
-    { from: 0, to: 399, color: "#ef4444", label: "Poor", risk: "Highest" },
-    { from: 400, to: 549, color: "#f59e0b", label: "Fair", risk: "High" },
-    { from: 550, to: 699, color: "#eab308", label: "Good", risk: "Medium" },
-    { from: 700, to: 849, color: "#84cc16", label: "Very Good", risk: "Low" },
-    { from: 850, to: 1000, color: "#22c55e", label: "Excellent", risk: "Lowest" },
+// Matches comprehensive_score_service.GRADE_BANDS exactly (via
+// seasonal_score_service.assign_grade) — keep both in sync if those
+// thresholds ever change.
+const FARMSCORE_BANDS = [
+    { from: 400, to: 625, color: "#ef4444", label: "Poor", risk: "Highest" },
+    { from: 626, to: 725, color: "#f59e0b", label: "Fair", risk: "High" },
+    { from: 726, to: 790, color: "#eab308", label: "Good", risk: "Medium" },
+    { from: 791, to: 870, color: "#84cc16", label: "Very Good", risk: "Low" },
+    { from: 871, to: 1000, color: "#22c55e", label: "Excellent", risk: "Lowest" },
 ];
 
 // Half-circle "speedometer" gauge: colored bands + a needle at `score`.
@@ -109,16 +111,16 @@ function _renderBhumiSubScoreBar(container, label, sub) {
 // rootEl must contain, as descendants: svg.bss-gauge-svg,
 // .bss-overall-score, .bss-overall-label, .bss-base, .bss-kharif,
 // .bss-rabi (report.html/index.html each define these once).
-function renderBhumiSeasonalScore(rootEl, seasonalScore) {
+function renderFarmScoreBreakdown(rootEl, breakdown) {
     if (!rootEl) return;
     const emptyEl = rootEl.querySelector(".bss-empty");
     const contentEl = rootEl.querySelector(".bss-content");
-    if (!seasonalScore || !seasonalScore.available) {
+    if (!breakdown || !breakdown.available) {
         if (emptyEl) {
             emptyEl.style.display = "block";
-            emptyEl.textContent = seasonalScore?.reason
-                ? `Bhumi Seasonal Score unavailable — ${seasonalScore.reason}`
-                : "Bhumi Seasonal Score unavailable — not enough historical/irrigation signal for this location.";
+            emptyEl.textContent = breakdown?.reason
+                ? `FarmScore breakdown unavailable — ${breakdown.reason}`
+                : "FarmScore breakdown unavailable — not enough irrigation/seasonal signal for this location.";
         }
         if (contentEl) contentEl.style.display = "none";
         return;
@@ -126,23 +128,23 @@ function renderBhumiSeasonalScore(rootEl, seasonalScore) {
     if (emptyEl) emptyEl.style.display = "none";
     if (contentEl) contentEl.style.display = "block";
 
-    renderSpeedometerGauge(rootEl.querySelector(".bss-gauge-svg"), seasonalScore.overall_score, 0, 1000, BHUMI_SEASONAL_SCORE_BANDS);
+    renderSpeedometerGauge(rootEl.querySelector(".bss-gauge-svg"), breakdown.overall_score, 400, 1000, FARMSCORE_BANDS);
     const scoreEl = rootEl.querySelector(".bss-overall-score");
-    if (scoreEl) scoreEl.textContent = seasonalScore.overall_score;
+    if (scoreEl) scoreEl.textContent = breakdown.overall_score;
     const labelEl = rootEl.querySelector(".bss-overall-label");
-    if (labelEl) labelEl.textContent = `${seasonalScore.category} · ${seasonalScore.risk_rating} Risk`;
+    if (labelEl) labelEl.textContent = `${breakdown.category} · ${breakdown.risk_rating} Risk`;
 
-    _renderBhumiSubScoreBar(rootEl.querySelector(".bss-base"), "Base Score", seasonalScore.base);
-    _renderBhumiSubScoreBar(rootEl.querySelector(".bss-kharif"), "Average Kharif Score", seasonalScore.kharif);
-    _renderBhumiSubScoreBar(rootEl.querySelector(".bss-rabi"), "Average Rabi Score", seasonalScore.rabi);
+    _renderBhumiSubScoreBar(rootEl.querySelector(".bss-base"), "Base Score", breakdown.base);
+    _renderBhumiSubScoreBar(rootEl.querySelector(".bss-kharif"), "Average Kharif Score", breakdown.kharif);
+    _renderBhumiSubScoreBar(rootEl.querySelector(".bss-rabi"), "Average Rabi Score", breakdown.rabi);
 }
 
-function renderBhumiScoreLegend(container) {
+function renderFarmScoreLegend(container) {
     if (!container) return;
     container.innerHTML = `
         <table class="bss-legend-table">
             <thead><tr><th>Category</th><th>Risk Rating</th><th>Interval</th></tr></thead>
-            <tbody>${BHUMI_SEASONAL_SCORE_BANDS.map(b => `
+            <tbody>${FARMSCORE_BANDS.map(b => `
                 <tr>
                     <td><span class="bss-legend-swatch" style="background:${b.color}"></span>${escapeHTML(b.label)}</td>
                     <td>${escapeHTML(b.risk)}</td>

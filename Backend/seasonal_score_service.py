@@ -1,87 +1,70 @@
 """
 seasonal_score_service.py
 ===========================
-Bhumi Seasonal Score — a Base + Kharif + Rabi composite, in the spirit
-of SatSource's SatScore report layout (Base Score + Average Kharif
-Score + Average Rabi Score => Overall score with a risk-rating band).
-
-HONESTY NOTE — read before wiring this into a lending decision:
-This is a NEW, independent, formula-based proxy built entirely from
-signals this app already computes from open satellite data (Sentinel-1/2
-irrigation + cropping-intensity signals, multi-year Kharif/Rabi NDVI).
-It is NOT the same computation SatSource runs, does not use SatSource's
-methodology or thresholds, and is not validated against real harvested-
-yield ground truth. Treat it exactly like yield_prediction.py's yield
-estimate: a transparent, documented starting point — replace the NDVI-
-to-score curve with a regression trained on YOUR farms' real seasonal
-performance the moment that data exists.
-
-This is DELIBERATELY a separate, complementary score from the main
-FarmScore (300-900, in scoring.py / comprehensive_score_service.py).
-FarmScore measures current land-condition SUITABILITY across 20
-weather/vegetation/radar parameters. Bhumi Seasonal Score measures
-multi-year SEASONAL CROP-PERFORMANCE PATTERN — a different question
-("has this land reliably produced a crop, season after season?" vs
-"is this land in good condition right now?"). Show both, don't merge
-them into one number.
+The main Bhumi AI FarmScore — a Base + Average Kharif + Average Rabi
+composite, in the spirit of SatSource's SatScore report layout (Base
+Score + Average Kharif Score + Average Rabi Score => Overall score with
+a grade/risk band). This is now THE ONE FarmScore the app shows —
+there is deliberately no second, separate "seasonal" score anymore.
 
 Score structure
 ----------------
   Base Score      0-200   irrigation condition + cropping intensity
-  Kharif Score    0-400   average of each available Kharif season's
-                          in-season NDVI, scored against a reference
-                          curve, across the lookback window
-  Rabi Score      0-400   same, for Rabi seasons
+                          (compute_base_score, unchanged since this
+                          module's earlier "Bhumi Seasonal Score" days)
+  Kharif Score    0-400   the SAME transparent 20-parameter suitability
+                          formula used everywhere else in this app
+                          (comprehensive_score_service.compute_comprehensive_score),
+                          computed using ONLY the latest Kharif season's
+                          satellite/weather values
+  Rabi Score      0-400   identical, using ONLY the latest Rabi season's
+                          values
   ------------------------------------------------------------------
-  Overall         0-1000  Base + Kharif + Rabi
+  Raw total       0-1000  Base + Kharif + Rabi
+  Final score   400-1000  Raw total rescaled onto the same 400-1000
+                          display range used across the rest of the app
+                          (matching the SatSure-style grade bands in
+                          comprehensive_score_service.GRADE_BANDS)
 
-Band cuts (independently chosen for Bhumi's own 0-1000 scale — not
-copied from any other product's thresholds):
-  0-399    Poor       Highest risk
-  400-549  Fair       High risk
-  550-699  Good       Medium risk
-  700-849  Very Good  Low risk
-  850-1000 Excellent  Lowest risk
+All 20 satellite/weather parameters (NDVI, EVI, SAVI, MSAVI, NDRE,
+NDMI, NDWI, CI_Green, CI_RedEdge, VV, VH, VH/VV, RVI, rainfall,
+air_temp, solar_radiation, SPI, SPEI, GDD, LST) are sub-parameters of
+the Kharif and Rabi scores above — there is no flat, season-blind
+20-parameter score computed separately from this anymore. Irrigation
+and cropping intensity are the two Base Score inputs.
+
+Missing components are excluded from the total (not scored as 0) and
+the raw total is rescaled against whatever max was actually achieved,
+so a farm with (for example) no Rabi signal still gets a final score
+comparable to one with all three components available.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
+
+from comprehensive_score_service import (
+    DEFAULT_GRADE,
+    PARAMETER_GROUPS,
+    PARAMETER_LABELS,
+    assign_grade,
+    compute_comprehensive_score,
+)
+from scoring import SOURCES, UNITS, adapt_components
 
 logger = logging.getLogger(__name__)
 
-# NDVI reference curve for scoring an in-season NDVI value onto a 0-100
-# sub-scale before it's blended into the 0-400 seasonal score. These are
-# deliberately generous, generic vegetation-health cutoffs (not crop-
-# specific) since at this stage the season's crop identity is itself
-# only a heuristic guess (see crop_intelligence_service.identify_crop_history).
-SEASON_NDVI_FLOOR = 0.20   # at/below this: essentially no active crop signal
-SEASON_NDVI_CEILING = 0.75  # at/above this: full marks — dense, healthy canopy
-
-
-def _ndvi_to_subscore_0_100(ndvi: Optional[float]) -> Optional[float]:
-    if ndvi is None:
-        return None
-    if ndvi <= SEASON_NDVI_FLOOR:
-        return 0.0
-    if ndvi >= SEASON_NDVI_CEILING:
-        return 100.0
-    return round((ndvi - SEASON_NDVI_FLOOR) / (SEASON_NDVI_CEILING - SEASON_NDVI_FLOOR) * 100, 1)
-
-
-def _grade_for_subscore(pct: Optional[float]) -> str:
-    if pct is None:
-        return "No data"
-    if pct < 30:
-        return "Poor"
-    if pct < 55:
-        return "Fair"
-    if pct < 75:
-        return "Good"
-    if pct < 90:
-        return "Very Good"
-    return "Excellent"
+# Same 5-tier bands as comprehensive_score_service.GRADE_BANDS, with a
+# risk-rating label for each — matches the reference SatSource-style
+# report's own "risk rating" column.
+RISK_RATING_BY_GRADE = {
+    "Excellent": "Lowest",
+    "Very Good": "Low",
+    "Good": "Medium",
+    "Fair": "High",
+    "Poor": "Highest",
+}
 
 
 def compute_base_score(irrigation: Optional[Dict[str, Any]], cropping_intensity: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -116,110 +99,131 @@ def compute_base_score(irrigation: Optional[Dict[str, Any]], cropping_intensity:
     return {
         "score": base_score,
         "max_score": 200,
-        "grade": _grade_for_subscore(base_pct),
+        "grade": assign_grade(round(400 + base_pct * 6)) if base_pct is not None else "No data",
         "irrigation_condition": "Irrigated" if irrigation.get("likely_irrigated") else ("Rainfed" if irrigation.get("likely_irrigated") is False else "Not available"),
         "cropping_intensity": intensity_label or "Not available",
         "data_available": base_score is not None,
     }
 
 
-def _season_score_from_ndvi_values(ndvi_values: List[float]) -> Dict[str, Any]:
-    """Blends however many valid seasonal NDVI readings are available
-    (e.g. 2 of the last 3 Kharif seasons) into one 0-400 seasonal
-    score. Missing seasons are excluded from the average, never
-    counted as zero — one bad-data year shouldn't tank the score.
-    """
-    subscores = [s for s in (_ndvi_to_subscore_0_100(v) for v in ndvi_values) if s is not None]
-    if not subscores:
-        return {"score": None, "max_score": 400, "grade": "No data", "years_used": 0, "data_available": False}
-    pct = sum(subscores) / len(subscores)
+def _compute_season_subscore(raw_values: Optional[Dict[str, Optional[float]]], weights: Optional[Dict[str, float]], max_score: int) -> Dict[str, Any]:
+    """Runs the full 20-parameter comprehensive-score formula against
+    ONE season's raw values only, then scales its 0-100 result onto
+    this season's share of the overall 1000-point scale (400 for
+    Kharif/Rabi)."""
+    comp_result = compute_comprehensive_score(raw_values or {}, weights=weights)
+    score_0_100 = comp_result.get("score_0_100")
+    if score_0_100 is None:
+        return {
+            "score": None, "max_score": max_score, "grade": "No data", "data_available": False,
+            "parameters_used": 0, "parameters_total": comp_result.get("parameters_total", 20),
+            "components": adapt_components(comp_result),
+        }
+    scaled = round(score_0_100 / 100 * max_score)
+    # Grade this season's own contribution on the same 400-1000 band
+    # scale, purely for the per-factor display (e.g. "Good (312/400)")
+    # — not part of the overall score's own grading.
+    equivalent_400_1000 = round(400 + (scaled / max_score) * 600)
     return {
-        "score": round(pct / 100 * 400),
-        "max_score": 400,
-        "grade": _grade_for_subscore(pct),
-        "years_used": len(subscores),
-        "data_available": True,
+        "score": scaled, "max_score": max_score, "grade": assign_grade(equivalent_400_1000), "data_available": True,
+        "parameters_used": comp_result["parameters_used"], "parameters_total": comp_result["parameters_total"],
+        "components": adapt_components(comp_result),
     }
 
 
-def compute_seasonal_scores_from_history(cropping_history: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Takes the {"years": [{"year", "kharif": {"ndvi", "cropped"}, "rabi": {...}}]}
-    shape from enrichment_service.fetch_cropping_history() (already
-    fetched elsewhere in the request — no extra Earth Engine call here)
-    and produces the Kharif and Rabi seasonal scores.
-    """
-    years = (cropping_history or {}).get("years") or []
-    kharif_vals = [y["kharif"]["ndvi"] for y in years if y.get("kharif", {}).get("ndvi") is not None]
-    rabi_vals = [y["rabi"]["ndvi"] for y in years if y.get("rabi", {}).get("ndvi") is not None]
-
-    return {
-        "kharif": _season_score_from_ndvi_values(kharif_vals),
-        "rabi": _season_score_from_ndvi_values(rabi_vals),
-        "years_in_window": len(years),
-    }
-
-
-OVERALL_BANDS = [
-    (0, 399, "Poor", "Highest"),
-    (400, 549, "Fair", "High"),
-    (550, 699, "Good", "Medium"),
-    (700, 849, "Very Good", "Low"),
-    (850, 1000, "Excellent", "Lowest"),
-]
-
-
-def _overall_band(score: int) -> Dict[str, str]:
-    for lo, hi, category, risk in OVERALL_BANDS:
-        if lo <= score <= hi:
-            return {"category": category, "risk_rating": risk}
-    return {"category": "Poor", "risk_rating": "Highest"}
+def _merge_season_components(kharif_components: Dict[str, Any], rabi_components: Dict[str, Any]) -> Dict[str, Any]:
+    """Backward-compatible flat components dict — one entry per
+    parameter with a top-level raw_value/sub_score (averaged across
+    whichever of Kharif/Rabi has data) plus nested "kharif"/"rabi"
+    breakdowns for anything that wants the per-season detail."""
+    merged = {}
+    for key in PARAMETER_LABELS:
+        k_c = kharif_components.get(key)
+        r_c = rabi_components.get(key)
+        raw_vals = [c["raw_value"] for c in (k_c, r_c) if c and c.get("raw_value") is not None]
+        sub_scores = [c["sub_score"] for c in (k_c, r_c) if c and c.get("sub_score") is not None]
+        weight = (k_c or r_c or {}).get("weight")
+        merged[key] = {
+            "label": PARAMETER_LABELS.get(key, key),
+            "unit": UNITS.get(key, ""),
+            "source": SOURCES.get(key, ""),
+            "weight": weight,
+            "raw_value": round(sum(raw_vals) / len(raw_vals), 4) if raw_vals else None,
+            "sub_score": round(sum(sub_scores) / len(sub_scores), 2) if sub_scores else None,
+            "data_available": bool(sub_scores),
+            "kharif": k_c,
+            "rabi": r_c,
+        }
+    return merged
 
 
-def compute_seasonal_performance_score(
+def compute_farmscore(
     irrigation: Optional[Dict[str, Any]],
     cropping_intensity: Optional[Dict[str, Any]],
-    cropping_history: Optional[Dict[str, Any]],
+    kharif_raw_values: Optional[Dict[str, Optional[float]]],
+    rabi_raw_values: Optional[Dict[str, Optional[float]]],
+    weights: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
-    """Top-level entry point — combine base + kharif + rabi into the
-    overall Bhumi Seasonal Score. Never raises; a completely missing
-    input just yields "No data" sub-components and, if EVERYTHING is
-    missing, an unavailable overall result rather than a fabricated 0.
+    """Top-level entry point — the ONE Bhumi AI FarmScore. Combines
+    Base + Kharif + Rabi into a single 400-1000 score. Never raises; a
+    completely missing input just yields "No data" sub-components and,
+    if EVERYTHING is missing, a default Poor-grade result rather than a
+    fabricated high score.
     """
     base = compute_base_score(irrigation, cropping_intensity)
-    seasonal = compute_seasonal_scores_from_history(cropping_history)
-    kharif, rabi = seasonal["kharif"], seasonal["rabi"]
+    kharif = _compute_season_subscore(kharif_raw_values, weights, 400)
+    rabi = _compute_season_subscore(rabi_raw_values, weights, 400)
 
     components_available = [c for c in (base, kharif, rabi) if c.get("data_available")]
     if not components_available:
         return {
-            "available": False,
-            "reason": "No irrigation, cropping-intensity, or historical NDVI signal available for this location.",
-            "base": base, "kharif": kharif, "rabi": rabi,
+            "final_score": 400,
+            "grade": DEFAULT_GRADE,
+            "components": _merge_season_components(kharif["components"], rabi["components"]),
+            "parameters_used": 0,
+            "parameters_total": len(PARAMETER_LABELS),
+            "confidence": "low",
+            "parameter_groups": PARAMETER_GROUPS,
+            "breakdown": {
+                "available": False,
+                "reason": "No irrigation, cropping-intensity, or seasonal satellite/weather signal available for this location.",
+                "base": base, "kharif": kharif, "rabi": rabi,
+            },
         }
 
-    # Missing components are excluded (not scored as 0) — same
-    # philosophy as the rest of this app's scoring: partial data still
-    # produces a usable, honestly-labeled result.
-    overall = sum(c["score"] for c in components_available)
+    # Missing components are excluded (not scored as 0) — partial data
+    # still produces a usable, honestly-labeled result.
+    raw_total = sum(c["score"] for c in components_available)
     max_possible = sum(c["max_score"] for c in components_available)
-    # Scale up to the full 0-1000 if a component was unavailable, so a
-    # 2-of-3-components score is still comparable to a full 3-of-3 one.
-    scaled_overall = round(overall / max_possible * 1000) if max_possible else 0
-    band = _overall_band(scaled_overall)
+    final_score = round(400 + (raw_total / max_possible) * 600) if max_possible else 400
+    grade = assign_grade(final_score)
+
+    merged_components = _merge_season_components(kharif["components"], rabi["components"])
+    parameters_used = sum(1 for c in merged_components.values() if c["data_available"])
 
     return {
-        "available": True,
-        "overall_score": scaled_overall,
-        "max_score": 1000,
-        "category": band["category"],
-        "risk_rating": band["risk_rating"],
-        "base": base,
-        "kharif": kharif,
-        "rabi": rabi,
-        "components_used": len(components_available),
-        "components_total": 3,
-        "method": "Bhumi Seasonal Score — Base (irrigation + cropping intensity) + Kharif + Rabi NDVI-derived seasonal scores. "
-                  "An independent, formula-based proxy for multi-year seasonal crop-performance pattern — "
-                  "NOT validated against real harvested-yield ground truth. Distinct from the main FarmScore "
-                  "(current land-condition suitability); the two measure different things and are shown separately.",
+        "final_score": final_score,
+        "grade": grade,
+        "components": merged_components,
+        "parameters_used": parameters_used,
+        "parameters_total": len(PARAMETER_LABELS),
+        "confidence": "high" if parameters_used >= 15 else "moderate" if parameters_used >= 10 else "low",
+        "parameter_groups": PARAMETER_GROUPS,
+        "validation_status": "provisional — Base+Kharif+Rabi weighting is a documented starting point, not empirically calibrated against ground-truth farm outcomes yet",
+        "breakdown": {
+            "available": True,
+            "overall_score": final_score,
+            "category": grade,
+            "risk_rating": RISK_RATING_BY_GRADE.get(grade, "Highest"),
+            "base": base,
+            "kharif": kharif,
+            "rabi": rabi,
+            "components_used": len(components_available),
+            "components_total": 3,
+            "method": "Bhumi AI FarmScore — Base (irrigation + cropping intensity, 0-200) + Average Kharif Score (0-400) + "
+                      "Average Rabi Score (0-400), each of the latter two computed with the same transparent 20-parameter "
+                      "suitability formula scoped to that season's own satellite/weather data. Rescaled to a 400-1000 "
+                      "final score. Missing components are excluded and the total rescaled against whatever max was "
+                      "actually achieved, rather than scored as zero.",
+        },
     }

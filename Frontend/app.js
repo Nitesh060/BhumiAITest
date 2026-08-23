@@ -650,25 +650,25 @@ async function fetchNearbyResources(lat, lng) {
 
 function gradeStyle(grade) {
     const map = {
-        Excellent: { bg: "rgba(52, 211, 153, 0.15)", color: "#34d399" },
-        Good:      { bg: "rgba(74, 222, 128, 0.15)",  color: "#4ade80" },
-        Average:   { bg: "rgba(250, 204, 21, 0.15)",  color: "#facc15" },
-        Fair:      { bg: "rgba(251, 146, 60, 0.15)",  color: "#fb923c" },
-        Poor:      { bg: "rgba(248, 113, 113, 0.15)", color: "#f87171" },
+        Excellent:  { bg: "rgba(52, 211, 153, 0.15)", color: "#34d399" },
+        "Very Good": { bg: "rgba(74, 222, 128, 0.15)",  color: "#4ade80" },
+        Good:       { bg: "rgba(250, 204, 21, 0.15)",  color: "#facc15" },
+        Fair:       { bg: "rgba(251, 146, 60, 0.15)",  color: "#fb923c" },
+        Poor:       { bg: "rgba(248, 113, 113, 0.15)", color: "#f87171" },
     };
     return map[grade] || map.Poor;
 }
 
 const GRADE_META = {
-    Excellent: { risk: "Low",      loan: "High Eligibility",     loanNote: "Strong land suitability across all measured factors." },
-    Good:      { risk: "Low",      loan: "High Eligibility",     loanNote: "Suitable for multiple crops with proper planning." },
-    Average:   { risk: "Moderate", loan: "Moderate Eligibility", loanNote: "Consider soil/irrigation support before financing." },
-    Fair:      { risk: "Moderate", loan: "Limited Eligibility",  loanNote: "Higher risk profile — field verification recommended." },
-    Poor:      { risk: "High",     loan: "Low Eligibility",      loanNote: "Field verification strongly recommended before financing." },
+    Excellent:   { risk: "Low",      loan: "High Eligibility",     loanNote: "Strong land suitability across all measured factors." },
+    "Very Good": { risk: "Low",      loan: "High Eligibility",     loanNote: "Suitable for multiple crops with proper planning." },
+    Good:        { risk: "Moderate", loan: "Moderate Eligibility", loanNote: "Consider soil/irrigation support before financing." },
+    Fair:        { risk: "Moderate", loan: "Limited Eligibility",  loanNote: "Higher risk profile — field verification recommended." },
+    Poor:        { risk: "High",     loan: "Low Eligibility",      loanNote: "Field verification strongly recommended before financing." },
 };
 
 function updateRing(score) {
-    const pct = Math.max(0, Math.min(1, score / 900));
+    const pct = Math.max(0, Math.min(1, (score - 400) / 600));
     const circumference = 339.3;
     const offset = circumference * (1 - pct);
 
@@ -835,8 +835,9 @@ function renderResult(data) {
     document.getElementById("final-score").textContent = score;
     updateRing(score);
 
-    // ---- Bhumi Seasonal Score (Base + Kharif + Rabi composite) ----
-    renderBhumiSeasonalScore(document.getElementById("bhumi-seasonal-score-card"), data.enrichment?.seasonal_score);
+    // ---- FarmScore breakdown (Base + Kharif + Rabi composite) — same
+    // score as the ring above, just showing how it's composed. ----
+    renderFarmScoreBreakdown(document.getElementById("bhumi-seasonal-score-card"), data.enrichment?.farmscore_breakdown);
 
     // ---- Grade badge ----
     const gs = gradeStyle(grade);
@@ -921,7 +922,7 @@ function renderResult(data) {
 
     // ---- Land Summary ----
     const meta = GRADE_META[grade] || GRADE_META.Poor;
-    document.getElementById("ls-score").textContent = `${score}/900`;
+    document.getElementById("ls-score").textContent = `${score}/1000`;
     document.getElementById("ls-risk").textContent = meta.risk;
     document.getElementById("ls-crop").textContent = topCrop;
     document.getElementById("ls-area").textContent = document.getElementById("farm-area").value || "Not drawn";
@@ -1475,7 +1476,14 @@ function renderSpectralResult(data) {
     document.getElementById("spectral-final-score").textContent = data.spectral_score;
     updateSpectralRing(data.spectral_score);
 
-    const gs = gradeStyle(data.grade === "Moderate" ? "Average" : data.grade);
+    // Spectral's own grade scale (Excellent/Good/Moderate/Fair/Poor, from
+    // spectral_service.py — unrelated to FarmScore) doesn't line up
+    // position-for-position with gradeStyle()'s FarmScore-flavored keys
+    // (Excellent/Very Good/Good/Fair/Poor) — its 2nd tier is called
+    // "Good" and its 3rd "Moderate", so both need remapping onto
+    // gradeStyle's matching color position, not just "Moderate".
+    const SPECTRAL_GRADE_TO_STYLE_KEY = { Good: "Very Good", Moderate: "Good" };
+    const gs = gradeStyle(SPECTRAL_GRADE_TO_STYLE_KEY[data.grade] || data.grade);
     const gradeEl = document.getElementById("spectral-grade");
     gradeEl.textContent = data.grade;
     gradeEl.style.background = gs.bg;

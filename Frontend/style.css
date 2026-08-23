@@ -1832,6 +1832,122 @@ body {
 }
 
 /* ===================================================================
+   Bhumi Seasonal Score — half-circle gauge + Base/Kharif/Rabi bars
+   (shell.js's renderBhumiSeasonalScore/renderSpeedometerGauge render
+   into these classes; shared by index.html and report.html)
+   =================================================================== */
+
+.bss-layout {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    align-items: center;
+}
+
+.bss-gauge-wrap {
+    position: relative;
+    width: 220px;
+    flex: 0 0 auto;
+    text-align: center;
+}
+
+.bss-gauge-svg {
+    width: 100%;
+    height: auto;
+    color: var(--text);
+}
+
+.bss-gauge-tick {
+    fill: var(--text-muted);
+    font-size: 11px;
+    font-family: var(--font-display, monospace);
+}
+
+.bss-overall-score {
+    margin-top: -34px;
+    font-size: 1.6rem;
+    font-weight: 700;
+    font-family: var(--font-display, monospace);
+}
+
+.bss-overall-label {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+.bss-subscores {
+    flex: 1 1 260px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 240px;
+}
+
+.bss-subscore-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.bss-subscore-grade {
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
+.bss-subscore-track {
+    height: 8px;
+    border-radius: 4px;
+    background: var(--surface-2);
+    overflow: hidden;
+}
+
+.bss-subscore-fill {
+    height: 100%;
+    background: var(--accent-blue);
+    border-radius: 4px;
+}
+
+.bss-subscore-ends {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.62rem;
+    color: var(--text-dim, var(--text-muted));
+    margin-top: 2px;
+}
+
+.bss-legend-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.74rem;
+}
+
+.bss-legend-table th {
+    text-align: left;
+    padding: 6px 8px;
+    background: var(--border);
+    font-weight: 700;
+}
+
+.bss-legend-table td {
+    padding: 6px 8px;
+    border-bottom: 1px dashed var(--border);
+}
+
+.bss-legend-table tr:last-child td {
+    border-bottom: none;
+}
+
+.bss-legend-swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    margin-right: 6px;
+}
+
+/* ===================================================================
    Farm Management page
    =================================================================== */
 .fm-columns {

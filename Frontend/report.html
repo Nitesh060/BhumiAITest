@@ -42,6 +42,27 @@
         </div>
 
         <div id="report-content" style="display:none;">
+            <div class="panel-card" id="bhumi-seasonal-score-card" style="margin-bottom:14px;">
+                <div class="panel-title">🎯 Bhumi Seasonal Score</div>
+                <p class="empty-hint bss-empty" style="display:none;"></p>
+                <div class="bss-content" style="display:none;">
+                    <div class="bss-layout">
+                        <div class="bss-gauge-wrap">
+                            <svg class="bss-gauge-svg" viewBox="0 0 220 140"></svg>
+                            <div class="bss-overall-score">—</div>
+                            <div class="bss-overall-label">—</div>
+                        </div>
+                        <div class="bss-subscores">
+                            <div class="bss-subscore bss-base"></div>
+                            <div class="bss-subscore bss-kharif"></div>
+                            <div class="bss-subscore bss-rabi"></div>
+                        </div>
+                    </div>
+                    <div id="bss-legend" style="margin-top:14px;"></div>
+                    <p class="empty-hint" style="margin-top:10px;">A Base (irrigation + cropping intensity) + multi-year average Kharif + average Rabi composite — a different question from the main FarmScore below ("has this land reliably produced a crop, season after season?" vs "is this land in good condition right now?"). Formula-based from satellite signals this app already computes, not validated against real harvested-yield ground truth yet.</p>
+                </div>
+            </div>
+
             <div class="panel-card" style="margin-bottom:14px;">
                 <div class="panel-title">🎯 Executive Farm Snapshot</div>
                 <div id="farm-details-list" class="enrichment-list"></div>

@@ -160,6 +160,16 @@ async function loadFarmers(search = "") {
     }
     document.getElementById("db-unconfigured-notice").style.display = "none";
     document.getElementById("fm-content").style.display = "block";
+    // The Leaflet map is created at script load time, while #fm-content
+    // (its container) is still display:none — Leaflet measures a
+    // zero-size container at that point and never finds out the real
+    // size later on its own, which is why the tiles render as blank/
+    // grey squares once the container becomes visible. invalidateSize()
+    // forces Leaflet to re-measure and re-fetch tiles for the actual
+    // now-visible size; the 0ms timeout just waits for the display
+    // change above to actually take effect in the browser's layout
+    // before Leaflet measures it.
+    setTimeout(() => map.invalidateSize(), 0);
 
     if (!res.ok) {
         // Previously any other error (401 from an expired token, a 500

@@ -42,6 +42,44 @@ map.on(L.Draw.Event.CREATED, function (e) {
     document.getElementById("save-farm-btn").disabled = false;
 });
 
+// ---- Detect My Location ----
+// Only centers/zooms the map to where the officer currently is, so
+// they don't have to manually pan/zoom from the default India-wide
+// view before drawing/walking a boundary — it doesn't save anything
+// by itself (that still needs an actual boundary from Draw/GPS Walk/
+// Import). Mirrors app.js's getCurrentLocation() on the main dashboard.
+document.getElementById("detect-location-btn").addEventListener("click", () => {
+    if (!navigator.geolocation) {
+        alert("Geolocation is not supported by your browser.");
+        return;
+    }
+
+    const btn = document.getElementById("detect-location-btn");
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = "⌖ Locating…";
+
+    navigator.geolocation.getCurrentPosition(
+        (position) => {
+            const { latitude, longitude } = position.coords;
+            map.setView([latitude, longitude], 16);
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        },
+        (error) => {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+            const messages = {
+                [error.PERMISSION_DENIED]: "Location permission denied.",
+                [error.POSITION_UNAVAILABLE]: "Location unavailable.",
+                [error.TIMEOUT]: "Location request timed out.",
+            };
+            alert(messages[error.code] || "Unable to get current location.");
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+    );
+});
+
 // ---- Tabs ----
 document.querySelectorAll(".fm-tab").forEach(tab => {
     tab.addEventListener("click", () => {

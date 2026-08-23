@@ -142,7 +142,17 @@ document.getElementById("import-file-input").addEventListener("change", async (e
 // ---- Farmer CRUD ----
 async function loadFarmers(search = "") {
     const url = search ? `${API_BASE_URL}/farmers?search=${encodeURIComponent(search)}` : `${API_BASE_URL}/farmers`;
-    const res = await bhumiAuthFetch(url);
+    const errorBox = document.getElementById("error-box");
+
+    let res;
+    try {
+        res = await bhumiAuthFetch(url);
+    } catch (err) {
+        errorBox.textContent = `Could not reach the server: ${err.message}`;
+        errorBox.style.display = "block";
+        return;
+    }
+
     if (res.status === 503) {
         document.getElementById("db-unconfigured-notice").style.display = "block";
         document.getElementById("fm-content").style.display = "none";
@@ -150,6 +160,18 @@ async function loadFarmers(search = "") {
     }
     document.getElementById("db-unconfigured-notice").style.display = "none";
     document.getElementById("fm-content").style.display = "block";
+
+    if (!res.ok) {
+        // Previously any other error (401 from an expired token, a 500
+        // from a real DB problem, etc.) fell straight through to the
+        // "no farmers" empty state below — indistinguishable from
+        // actually having zero farmers, hiding the real problem.
+        const err = await res.json().catch(() => ({}));
+        errorBox.textContent = err.error || `Could not load farmers (server said: ${res.status}).`;
+        errorBox.style.display = "block";
+        return;
+    }
+    errorBox.style.display = "none";
 
     const data = await res.json();
     const farmers = data.farmers || [];
@@ -173,6 +195,9 @@ async function loadFarmers(search = "") {
 
 document.getElementById("farmer-form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    const errorBox = document.getElementById("error-box");
+    errorBox.style.display = "none";
+
     const body = {
         name: document.getElementById("farmer-name").value.trim(),
         phone: document.getElementById("farmer-phone").value.trim() || null,
@@ -182,12 +207,26 @@ document.getElementById("farmer-form").addEventListener("submit", async (e) => {
     };
     if (!body.name) return;
 
-    const res = await bhumiAuthFetch(`${API_BASE_URL}/farmers`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    });
-    if (res.ok) {
-        e.target.reset();
-        loadFarmers();
+    // Previously any failure here — a non-OK response (bad request,
+    // auth/CORS/DB error) or a network-level failure (fetch itself
+    // throwing, e.g. CORS block) — left the form exactly as the user
+    // left it with zero feedback, indistinguishable from "did nothing
+    // happen yet". Both are now surfaced in error-box.
+    try {
+        const res = await bhumiAuthFetch(`${API_BASE_URL}/farmers`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        });
+        if (res.ok) {
+            e.target.reset();
+            loadFarmers();
+        } else {
+            const err = await res.json().catch(() => ({}));
+            errorBox.textContent = err.error || `Could not register farmer (server said: ${res.status}).`;
+            errorBox.style.display = "block";
+        }
+    } catch (err) {
+        errorBox.textContent = `Could not reach the server: ${err.message}`;
+        errorBox.style.display = "block";
     }
 });
 

@@ -24,6 +24,7 @@ New in this module:
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -61,23 +62,34 @@ def fetch_historical_weather(lat: float, lng: float, polygon: Optional[dict] = N
     so this reduced to None on essentially every year, every request.
     Switched to `_scaled_region`/`_reduce_mean_with_retry` — the same
     fix already proven for these exact datasets elsewhere in this app.
+
+    Runs every year's rainfall + temperature query concurrently (was a
+    single sequential loop — 2 Earth Engine round-trips per year, so an
+    11-year span like /report/pdf's default (2016-present) meant 22
+    round-trips back to back). That's exactly what timed out
+    /report/pdf on Render: gunicorn's own worker timeout is generously
+    set to 300s (see Procfile), but Render's platform-level proxy
+    timeout sits well under that, and the browser saw the connection
+    die mid-response as a bare "Failed to fetch" — no HTTP error to
+    even show a reason. Same ThreadPoolExecutor pattern app.py's
+    /calculate already uses for its own enrichment pool.
     """
     if end_year is None:
         end_year = datetime.utcnow().year
 
     chirps_region = _scaled_region(lat, lng, polygon, CHIRPS_SCALE_M)
     modis_region = _scaled_region(lat, lng, polygon, MODIS_LST_SCALE_M)
-    yearly: List[Dict[str, Any]] = []
+    years = list(range(start_year, end_year + 1))
 
-    for year in range(start_year, end_year + 1):
+    def _year_rainfall(year: int) -> Optional[float]:
         rain_coll = (
             ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
             .filterDate(f"{year}-01-01", f"{year}-12-31")
             .filterBounds(chirps_region)
         )
-        rain_total = rain_coll.sum()
-        rain_val = _reduce_mean_with_retry(rain_total, lat, lng, polygon, CHIRPS_SCALE_M)
+        return _reduce_mean_with_retry(rain_coll.sum(), lat, lng, polygon, CHIRPS_SCALE_M)
 
+    def _year_temperature(year: int) -> Optional[float]:
         temp_coll = (
             ee.ImageCollection("MODIS/061/MOD11A1")
             .filterDate(f"{year}-01-01", f"{year}-12-31")
@@ -85,13 +97,20 @@ def fetch_historical_weather(lat: float, lng: float, polygon: Optional[dict] = N
             .select("LST_Day_1km")
             .map(lambda img: img.multiply(0.02).subtract(273.15).rename("LST_C"))
         )
-        temp_val = _reduce_mean_with_retry(temp_coll.mean(), lat, lng, polygon, MODIS_LST_SCALE_M)
+        return _reduce_mean_with_retry(temp_coll.mean(), lat, lng, polygon, MODIS_LST_SCALE_M)
 
-        yearly.append({
-            "year": year,
-            "total_rainfall_mm": round(rain_val, 1) if rain_val is not None else None,
-            "avg_temperature_c": round(temp_val, 2) if temp_val is not None else None,
-        })
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        rain_futures = {year: pool.submit(_year_rainfall, year) for year in years}
+        temp_futures = {year: pool.submit(_year_temperature, year) for year in years}
+        yearly: List[Dict[str, Any]] = []
+        for year in years:
+            rain_val = rain_futures[year].result()
+            temp_val = temp_futures[year].result()
+            yearly.append({
+                "year": year,
+                "total_rainfall_mm": round(rain_val, 1) if rain_val is not None else None,
+                "avg_temperature_c": round(temp_val, 2) if temp_val is not None else None,
+            })
 
     valid_rain = [y["total_rainfall_mm"] for y in yearly if y["total_rainfall_mm"] is not None]
     avg_rainfall = round(sum(valid_rain) / len(valid_rain), 1) if valid_rain else None

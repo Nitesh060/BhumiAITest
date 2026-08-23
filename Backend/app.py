@@ -68,6 +68,7 @@ import db as db_module
 import farm_management_service as fms
 import auth_service
 import governance_service
+import ground_truth_service
 from spectral_indices import fetch_extended_indices, fetch_sar_moisture
 from historical_timeline_service import fetch_ndvi_historical_timeline, fetch_before_after_comparison
 from enrichment_service import fetch_vegetation_heatmap
@@ -1168,6 +1169,82 @@ def delete_farm_route(farm_id):
         if not ok:
             return jsonify({"error": "Farm not found"}), 404
         return jsonify({"status": "deleted"}), 200
+    finally:
+        session.close()
+
+
+@app.route("/farms/<farm_id>/ground-truth", methods=["POST"])
+@auth_service.require_auth()
+def create_ground_truth_route(farm_id):
+    """Records a field officer's real, observed crop identity and yield
+    for this farm-season, optionally with a photo — see
+    ground_truth_service.py / ROADMAP.md Phase 8. multipart/form-data:
+    crop (required), season, sowing_date, harvest_date (YYYY-MM-DD),
+    observed_yield_kg_per_acre, notes, image (optional photo file).
+    """
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+
+    crop = (request.form.get("crop") or "").strip()
+    if not crop:
+        return jsonify({"error": "'crop' is required"}), 400
+
+    photo_bytes = None
+    photo_mime_type = None
+    file = request.files.get("image")
+    if file and file.filename:
+        if file.mimetype not in ALLOWED_IMAGE_TYPES:
+            return jsonify({
+                "error": f"Unsupported image type '{file.mimetype}'. Use JPEG, PNG, or WEBP."
+            }), 400
+        photo_bytes = file.read()
+        photo_mime_type = file.mimetype
+
+    yield_raw = request.form.get("observed_yield_kg_per_acre")
+    try:
+        observed_yield = float(yield_raw) if yield_raw else None
+    except ValueError:
+        return jsonify({"error": "'observed_yield_kg_per_acre' must be a number"}), 400
+
+    session = db_module.get_session()
+    try:
+        farm = fms.get_farm(session, farm_id)
+        if not farm:
+            return jsonify({"error": "Farm not found"}), 404
+
+        try:
+            obs = ground_truth_service.create_observation(
+                session, farm_id=farm_id, crop=crop,
+                season=request.form.get("season") or None,
+                sowing_date=request.form.get("sowing_date") or None,
+                harvest_date=request.form.get("harvest_date") or None,
+                observed_yield_kg_per_acre=observed_yield,
+                notes=request.form.get("notes") or None,
+                photo_bytes=photo_bytes, photo_mime_type=photo_mime_type,
+                recorded_by_user_id=request.user.get("user_id"),
+            )
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        governance_service.log_event(
+            session, event_type="ground_truth_recorded",
+            summary=f"Ground truth recorded for farm {farm_id}: {crop}",
+            detail=obs.to_dict(), user_id=request.user.get("user_id"), farm_id=farm_id,
+        )
+        return jsonify(obs.to_dict()), 201
+    finally:
+        session.close()
+
+
+@app.route("/farms/<farm_id>/ground-truth", methods=["GET"])
+@auth_service.require_auth()
+def list_ground_truth_route(farm_id):
+    if not db_module.is_db_configured():
+        return _db_unavailable_response()
+    session = db_module.get_session()
+    try:
+        observations = ground_truth_service.list_observations_for_farm(session, farm_id)
+        return jsonify({"observations": [o.to_dict() for o in observations]}), 200
     finally:
         session.close()
 

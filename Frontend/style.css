@@ -1852,7 +1852,8 @@ body {
 }
 
 .fm-form input,
-.fm-form select {
+.fm-form select,
+.fm-form textarea {
     background: var(--bg, #0a0f0d);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -1862,6 +1863,10 @@ body {
     font-family: var(--font-display, inherit);
     box-sizing: border-box;
     width: 100%;
+}
+
+.fm-form textarea {
+    resize: vertical;
 }
 
 .fm-form select {

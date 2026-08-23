@@ -126,6 +126,28 @@
 
             </div>
 
+            <div class="panel-card" id="ground-truth-panel" style="display:none;margin-top:14px;">
+                <div class="panel-title">📋 Ground Truth — <span id="gt-farm-label">—</span> <span class="panel-subtitle" id="gt-count"></span></div>
+                <p class="empty-hint">Record the actual observed crop and yield after harvest — this is the labeled data every trained ML model on the roadmap depends on.</p>
+
+                <form id="ground-truth-form" class="fm-form">
+                    <input type="text" id="gt-crop" placeholder="Crop *" required />
+                    <select id="gt-season">
+                        <option value="">Season</option>
+                        <option value="kharif">Kharif</option>
+                        <option value="rabi">Rabi</option>
+                    </select>
+                    <input type="date" id="gt-sowing-date" />
+                    <input type="date" id="gt-harvest-date" />
+                    <input type="number" step="0.01" id="gt-yield" placeholder="Observed yield (kg/acre)" />
+                    <textarea id="gt-notes" placeholder="Notes (optional)" rows="2"></textarea>
+                    <input type="file" id="gt-photo" accept="image/jpeg,image/png,image/webp" />
+                    <button type="submit" class="btn-detect">+ Record Observation</button>
+                </form>
+
+                <div id="ground-truth-list" class="fm-list"></div>
+            </div>
+
             <div class="panel-card" style="margin-top:14px;">
                 <div class="panel-title">🗺️ Boundary Map</div>
                 <div id="fm-map" style="height:420px;border-radius:var(--radius);"></div>
@@ -135,7 +157,7 @@
 
         <footer class="app-footer">
             <span>🛰️ Phase 1 — Farmer &amp; Farm Management</span>
-            <span>Multi-farm support · GPS survey · KML/GeoJSON import</span>
+            <span>Multi-farm support · GPS survey · KML/GeoJSON import · Ground truth capture</span>
         </footer>
 
     </div>

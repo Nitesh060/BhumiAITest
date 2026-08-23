@@ -9,6 +9,7 @@ const API_BASE_URL =
     "https://bhumiaitest.onrender.com";
 
 let selectedFarmerId = null;
+let selectedFarmId = null;
 let pendingPolygon = null;   // GeoJSON Feature, set by draw/gps/import before saving
 let pendingCentroid = null;  // {lat, lng}
 let gpsWatchId = null;
@@ -194,6 +195,8 @@ document.getElementById("farmer-search").addEventListener("input", (e) => loadFa
 
 function selectFarmer(id, name) {
     selectedFarmerId = id;
+    selectedFarmId = null;
+    document.getElementById("ground-truth-panel").style.display = "none";
     document.getElementById("selected-farmer-name").textContent = name;
     document.getElementById("farms-panel").style.display = "block";
     document.querySelectorAll(".fm-list-item").forEach(el => el.classList.toggle("selected", el.dataset.id === id));
@@ -209,9 +212,11 @@ async function loadFarms(farmerId) {
     const list = document.getElementById("farm-list");
     if (!farms.length) {
         list.innerHTML = `<p class="empty-hint">No farms yet — add one below.</p>`;
+        document.getElementById("ground-truth-panel").style.display = "none";
+        selectedFarmId = null;
     } else {
         list.innerHTML = farms.map(f => `
-            <div class="fm-list-item">
+            <div class="fm-list-item ${f.id === selectedFarmId ? "selected" : ""}" data-id="${escapeHTML(f.id)}">
                 <div class="fm-list-item-title">${escapeHTML(f.label || "Unlabeled farm")} <span style="float:right;">🗑️</span></div>
                 <div class="fm-list-item-sub">
                     ${f.lat.toFixed(4)}°, ${f.lng.toFixed(4)}° · ${f.area_ha ? f.area_ha.toFixed(2) + " ha" : "area unknown"} · ${escapeHTML(f.survey_method || "—")}
@@ -223,8 +228,13 @@ async function loadFarms(farmerId) {
                 ev.stopPropagation();
                 if (!confirm("Delete this farm?")) return;
                 await bhumiAuthFetch(`${API_BASE_URL}/farms/${farms[i].id}`, { method: "DELETE" });
+                if (selectedFarmId === farms[i].id) {
+                    selectedFarmId = null;
+                    document.getElementById("ground-truth-panel").style.display = "none";
+                }
                 loadFarms(farmerId);
             });
+            el.addEventListener("click", () => selectFarm(farms[i].id, farms[i].label || "Unlabeled farm"));
         });
     }
 
@@ -270,6 +280,84 @@ document.getElementById("save-farm-btn").addEventListener("click", async () => {
     } else {
         const err = await res.json();
         document.getElementById("error-box").textContent = err.error || "Could not save farm.";
+        document.getElementById("error-box").style.display = "block";
+    }
+});
+
+// ---- Ground Truth (ROADMAP.md Phase 8 — labeled-data bootstrap) ----
+function selectFarm(farmId, label) {
+    selectedFarmId = farmId;
+    document.querySelectorAll("#farm-list .fm-list-item").forEach(el => el.classList.toggle("selected", el.dataset.id === farmId));
+    document.getElementById("gt-farm-label").textContent = label;
+    document.getElementById("ground-truth-panel").style.display = "block";
+    loadGroundTruth(farmId);
+}
+
+async function loadGroundTruth(farmId) {
+    const res = await bhumiAuthFetch(`${API_BASE_URL}/farms/${farmId}/ground-truth`);
+    const data = await res.json();
+    const observations = data.observations || [];
+
+    document.getElementById("gt-count").textContent = `(${observations.length})`;
+
+    const list = document.getElementById("ground-truth-list");
+    if (!observations.length) {
+        list.innerHTML = `<p class="empty-hint">No observations recorded yet for this farm.</p>`;
+        return;
+    }
+    list.innerHTML = observations.map(o => {
+        const dates = [o.sowing_date, o.harvest_date].filter(Boolean).map(d => d.slice(0, 10)).join(" → ");
+        const yieldText = o.observed_yield_kg_per_acre != null ? `${o.observed_yield_kg_per_acre} kg/acre` : null;
+        return `
+            <div class="fm-list-item">
+                <div class="fm-list-item-title">${escapeHTML(o.crop)}${o.season ? ` · ${escapeHTML(o.season)}` : ""} ${o.has_photo ? "📷" : ""}</div>
+                <div class="fm-list-item-sub">
+                    ${[dates, yieldText].filter(Boolean).map(escapeHTML).join(" · ") || "—"}
+                    ${o.notes ? `<br>${escapeHTML(o.notes)}` : ""}
+                </div>
+            </div>`;
+    }).join("");
+}
+
+document.getElementById("ground-truth-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!selectedFarmId) return;
+
+    const crop = document.getElementById("gt-crop").value.trim();
+    if (!crop) return;
+
+    const formData = new FormData();
+    formData.append("crop", crop);
+    const season = document.getElementById("gt-season").value;
+    if (season) formData.append("season", season);
+    const sowingDate = document.getElementById("gt-sowing-date").value;
+    if (sowingDate) formData.append("sowing_date", sowingDate);
+    const harvestDate = document.getElementById("gt-harvest-date").value;
+    if (harvestDate) formData.append("harvest_date", harvestDate);
+    const yieldValue = document.getElementById("gt-yield").value;
+    if (yieldValue) formData.append("observed_yield_kg_per_acre", yieldValue);
+    const notes = document.getElementById("gt-notes").value.trim();
+    if (notes) formData.append("notes", notes);
+    const photoFile = document.getElementById("gt-photo").files[0];
+    if (photoFile) {
+        if (photoFile.size > 2 * 1024 * 1024) {
+            document.getElementById("error-box").textContent = "Photo too large — please use a photo under 2MB.";
+            document.getElementById("error-box").style.display = "block";
+            return;
+        }
+        formData.append("image", photoFile);
+    }
+
+    const res = await bhumiAuthFetch(`${API_BASE_URL}/farms/${selectedFarmId}/ground-truth`, {
+        method: "POST", body: formData,
+    });
+
+    if (res.ok) {
+        e.target.reset();
+        loadGroundTruth(selectedFarmId);
+    } else {
+        const err = await res.json();
+        document.getElementById("error-box").textContent = err.error || "Could not record observation.";
         document.getElementById("error-box").style.display = "block";
     }
 });

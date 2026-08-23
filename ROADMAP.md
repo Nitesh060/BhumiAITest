@@ -26,9 +26,17 @@ Unblocks Phase 11 (trained models) and Phase 12 (full BCIS). Highest priority.
 - Design a minimal loan/repayment schema and get it exposed from
   Annapurna's own systems (needs Annapurna IT — the single highest-leverage
   integration in the whole roadmap).
-- Build a basic field-officer data-capture flow (yield measurements,
-  geo-tagged photos) so labeled farm-seasons start accumulating this season,
-  not whenever Phase 11 formally kicks off.
+- Done: field-officer data-capture flow — `GroundTruthObservation`
+  (`Backend/models.py`), `Backend/ground_truth_service.py`, and
+  `POST`/`GET /farms/<farm_id>/ground-truth` (`app.py`) let an officer
+  record a farm-season's real observed crop, sowing/harvest dates,
+  yield (kg/acre), notes, and an optional photo, from a form on the
+  Farm Management page. Every submission is one labeled farm-season
+  closer to what Phase 11's trained models need. Photos are stored as
+  base64 directly in Postgres (2MB cap) rather than a proper object
+  store — a deliberate bootstrap choice given this app has no S3 (or
+  equivalent) configured; revisit before this needs to hold thousands
+  of photos.
 
 ## Phase 9 — Governance & Compliance Foundation
 No formal dependency on Phase 8, but must land before Phase 6/Phase 7 move

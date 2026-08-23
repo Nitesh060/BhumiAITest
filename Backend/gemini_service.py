@@ -111,7 +111,7 @@ estimate, or restate any number that is not given below. Do not mention
 a specific yield, rupee amount, or percentage that isn't listed here.
 Write 3-4 short sentences, plain language, no headers or bullet points.
 
-FarmScore: {context.get('score')}/900 ({context.get('grade')})
+FarmScore: {context.get('score')}/1000 ({context.get('grade')})
 Component breakdown:
 {components_text}
 
@@ -249,7 +249,7 @@ def _format_farm_context(farm_context: Optional[Dict[str, Any]]) -> str:
     crop = (farm_context.get("recommended_crops") or {}).get("primary", {})
     climate = farm_context.get("climate_risk") or {}
 
-    return f"""FarmScore: {farm_context.get('score')}/900 ({farm_context.get('grade')})
+    return f"""FarmScore: {farm_context.get('score')}/1000 ({farm_context.get('grade')})
 Components:
 {comp_lines or "not available"}
 Top recommended crop: {crop.get('crop', 'not available')} ({crop.get('score', '')}%)

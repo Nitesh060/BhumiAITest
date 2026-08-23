@@ -26,9 +26,15 @@ PARAMETER_GROUPS = {
 }
 
 DEFAULT_GRADE = "Poor"
-GRADE_BANDS = [(781, "Excellent"), (661, "Good"), (541, "Average"), (421, "Fair")]
+# 400-1000 scale, 5-tier bands — matches the reference SatSource-style
+# report's exact category/interval mapping (Poor 400-625, Fair 626-725,
+# Good 726-790, Very Good 791-870, Excellent 871-1000), not an
+# independently-chosen scheme. Shared with seasonal_score_service.py's
+# Base+Kharif+Rabi combiner via assign_grade() below, so the two never
+# drift out of sync.
+GRADE_BANDS = [(871, "Excellent"), (791, "Very Good"), (726, "Good"), (626, "Fair")]
 
-def _assign_grade(scaled_score: float) -> str:
+def assign_grade(scaled_score: float) -> str:
     for threshold, label in GRADE_BANDS:
         if scaled_score >= threshold:
             return label
@@ -129,11 +135,11 @@ def compute_comprehensive_score(raw_values: Dict[str, Optional[float]], weights:
             c["contribution"] = round(effective_weight * c["sub_score"], 2)
             weighted_sum += effective_weight * c["sub_score"]
     score = round(weighted_sum, 2)
-    scaled = round(300 + (score / 100) * 600)
+    scaled = round(400 + (score / 100) * 600)
     used = sum(1 for c in components.values() if c["sub_score"] is not None)
     confidence = "high" if used >= 15 else "moderate" if used >= 10 else "low"
     return {
-        "score_0_100": score, "score_300_900": scaled, "grade": _assign_grade(scaled),
+        "score_0_100": score, "score_400_1000": scaled, "grade": assign_grade(scaled),
         "confidence": confidence, "components": components, "parameters_used": used,
         "parameters_total": len(_NORMALIZERS), "parameter_groups": PARAMETER_GROUPS,
         "validation_status": "provisional — correlated parameter groups are explicitly tracked; empirical correlation/PCA calibration against ground-truth farms is still required",

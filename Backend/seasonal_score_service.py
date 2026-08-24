@@ -73,7 +73,12 @@ def compute_base_score(irrigation: Optional[Dict[str, Any]], cropping_intensity:
     their own glossary page) using this app's existing signals:
       - enrichment_service.fetch_irrigation_signal() -> likely_irrigated
       - enrichment_service.fetch_cropping_intensity() -> label
-        ("Once a Year" / "Twice a Year" / "No Crop Grown")
+        ("Single cropping (mono)" / "Double cropping" / "Triple / multi
+        cropping" — the label this function ACTUALLY returns; a prior
+        version of this map used made-up labels ("Once a Year" / "Twice
+        a Year" / "No Crop Grown") that fetch_cropping_intensity never
+        produces, so the cropping-intensity signal silently never
+        matched and Base Score was computed from irrigation alone.
     """
     irrigation = irrigation or {}
     cropping_intensity = cropping_intensity or {}
@@ -86,7 +91,7 @@ def compute_base_score(irrigation: Optional[Dict[str, Any]], cropping_intensity:
         irrigation_pts = 40.0  # rainfed still scores something — not zero
 
     intensity_label = cropping_intensity.get("label")
-    intensity_map = {"Twice a Year": 100.0, "Once a Year": 60.0, "No Crop Grown": 10.0}
+    intensity_map = {"Triple / multi cropping": 100.0, "Double cropping": 70.0, "Single cropping (mono)": 40.0}
     intensity_pts = intensity_map.get(intensity_label)
     intensity_available = intensity_pts is not None
     if intensity_pts is None:

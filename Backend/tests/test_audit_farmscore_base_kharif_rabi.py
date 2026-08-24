@@ -37,7 +37,7 @@ FULL_RABI_RAW = {
     "spi": -0.1, "spei": -0.2, "gdd": 1200, "lst": 22,
 }
 IRRIGATED = {"likely_irrigated": True}
-TWICE_A_YEAR = {"label": "Twice a Year"}
+TRIPLE_CROPPING = {"label": "Triple / multi cropping"}
 
 
 class TestOnlyOneScoreExists:
@@ -60,7 +60,7 @@ class TestOnlyOneScoreExists:
 
 class TestFarmScoreRange:
     def test_full_data_scores_within_400_1000(self):
-        result = sss.compute_farmscore(IRRIGATED, TWICE_A_YEAR, FULL_KHARIF_RAW, FULL_RABI_RAW)
+        result = sss.compute_farmscore(IRRIGATED, TRIPLE_CROPPING, FULL_KHARIF_RAW, FULL_RABI_RAW)
         assert 400 <= result["final_score"] <= 1000
 
     def test_completely_missing_data_floors_at_400(self):
@@ -73,10 +73,10 @@ class TestFarmScoreRange:
         fraction of 1000 — it should rescale against the max actually
         achieved (Base 200 + Kharif 400 = 600), same philosophy as the
         old Bhumi Seasonal Score's partial-data handling."""
-        full = sss.compute_farmscore(IRRIGATED, TWICE_A_YEAR, FULL_KHARIF_RAW, FULL_RABI_RAW)
-        no_rabi = sss.compute_farmscore(IRRIGATED, TWICE_A_YEAR, FULL_KHARIF_RAW, {})
+        full = sss.compute_farmscore(IRRIGATED, TRIPLE_CROPPING, FULL_KHARIF_RAW, FULL_RABI_RAW)
+        no_rabi = sss.compute_farmscore(IRRIGATED, TRIPLE_CROPPING, FULL_KHARIF_RAW, {})
         assert 400 <= no_rabi["final_score"] <= 1000
-        # Both are strong (irrigated, twice-a-year, healthy NDVI) — should
+        # Both are strong (irrigated, triple-cropped, healthy NDVI) — should
         # land in a similar grade even with one seasonal leg missing.
         assert abs(full["final_score"] - no_rabi["final_score"]) < 50
 
@@ -93,7 +93,7 @@ class TestGradeBandsMatchReferenceReport:
 
 class TestBaseKharifRabiComposition:
     def test_base_score_is_irrigation_and_cropping_intensity_only(self):
-        base = sss.compute_base_score(IRRIGATED, TWICE_A_YEAR)
+        base = sss.compute_base_score(IRRIGATED, TRIPLE_CROPPING)
         assert base["score"] == 200  # both signals maxed out
         assert base["max_score"] == 200
         assert base["data_available"] is True
@@ -103,10 +103,42 @@ class TestBaseKharifRabiComposition:
         assert base["score"] is None
         assert base["data_available"] is False
 
+
+class TestCroppingIntensityLabelMatchesRealFetchFunction:
+    """Regression test: compute_base_score's intensity_map previously
+    listed labels ("Once a Year" / "Twice a Year" / "No Crop Grown")
+    that enrichment_service.fetch_cropping_intensity() never actually
+    returns — it returns "Single cropping (mono)" / "Double cropping" /
+    "Triple / multi cropping". That mismatch meant intensity_map.get()
+    always missed, so cropping intensity silently never contributed to
+    Base Score in production, even though irrigation alone was enough
+    to make data_available=True and hide the problem."""
+
+    @pytest.mark.parametrize("label,expected_pts", [
+        ("Single cropping (mono)", 40.0),
+        ("Double cropping", 70.0),
+        ("Triple / multi cropping", 100.0),
+    ])
+    def test_real_labels_are_recognized(self, label, expected_pts):
+        base_with = sss.compute_base_score(None, {"label": label})
+        base_without = sss.compute_base_score(None, None)
+        assert base_with["data_available"] is True
+        assert base_without["data_available"] is False
+        # Irrigation absent in both — the only difference is the
+        # cropping-intensity signal, so its points alone set base_pct.
+        assert base_with["score"] == round(expected_pts / 100 * 200)
+
+    def test_a_label_fetch_cropping_intensity_never_returns_is_ignored(self):
+        """The old, made-up labels must NOT silently start matching
+        again — that would just reintroduce a different mismatch."""
+        base = sss.compute_base_score(None, {"label": "Twice a Year"})
+        assert base["data_available"] is False
+        assert base["cropping_intensity"] == "Twice a Year"  # still shown, just not scored
+
     def test_kharif_and_rabi_use_the_same_20_parameter_formula(self):
         """Kharif/Rabi sub-scores are not a NDVI-only heuristic anymore —
         they're the full comprehensive formula, scoped per season."""
-        result = sss.compute_farmscore(IRRIGATED, TWICE_A_YEAR, FULL_KHARIF_RAW, FULL_RABI_RAW)
+        result = sss.compute_farmscore(IRRIGATED, TRIPLE_CROPPING, FULL_KHARIF_RAW, FULL_RABI_RAW)
         breakdown = result["breakdown"]
         assert breakdown["kharif"]["parameters_used"] == 20
         assert breakdown["rabi"]["parameters_used"] == 20
@@ -115,7 +147,7 @@ class TestBaseKharifRabiComposition:
         assert breakdown["base"]["max_score"] == 200
 
     def test_raw_total_equals_base_plus_kharif_plus_rabi(self):
-        result = sss.compute_farmscore(IRRIGATED, TWICE_A_YEAR, FULL_KHARIF_RAW, FULL_RABI_RAW)
+        result = sss.compute_farmscore(IRRIGATED, TRIPLE_CROPPING, FULL_KHARIF_RAW, FULL_RABI_RAW)
         b = result["breakdown"]
         raw_total = b["base"]["score"] + b["kharif"]["score"] + b["rabi"]["score"]
         expected_final = round(400 + (raw_total / 1000) * 600)
@@ -130,19 +162,19 @@ class TestMergedComponentsBackwardCompatible:
     now scored twice (once per season) under the hood."""
 
     def test_top_level_fields_present_for_every_parameter(self):
-        result = sss.compute_farmscore(IRRIGATED, TWICE_A_YEAR, FULL_KHARIF_RAW, FULL_RABI_RAW)
+        result = sss.compute_farmscore(IRRIGATED, TRIPLE_CROPPING, FULL_KHARIF_RAW, FULL_RABI_RAW)
         ndvi = result["components"]["ndvi"]
         for field in ("raw_value", "sub_score", "weight", "label", "unit", "source", "data_available"):
             assert field in ndvi
 
     def test_kharif_and_rabi_breakdown_nested_under_each_component(self):
-        result = sss.compute_farmscore(IRRIGATED, TWICE_A_YEAR, FULL_KHARIF_RAW, FULL_RABI_RAW)
+        result = sss.compute_farmscore(IRRIGATED, TRIPLE_CROPPING, FULL_KHARIF_RAW, FULL_RABI_RAW)
         ndvi = result["components"]["ndvi"]
         assert ndvi["kharif"]["raw_value"] == 0.6
         assert ndvi["rabi"]["raw_value"] == 0.5
         assert ndvi["raw_value"] == 0.55  # averaged, backward-compatible
 
     def test_parameters_used_counts_distinct_parameters_not_season_pairs(self):
-        result = sss.compute_farmscore(IRRIGATED, TWICE_A_YEAR, FULL_KHARIF_RAW, FULL_RABI_RAW)
+        result = sss.compute_farmscore(IRRIGATED, TRIPLE_CROPPING, FULL_KHARIF_RAW, FULL_RABI_RAW)
         assert result["parameters_used"] == 20
         assert result["parameters_total"] == 20

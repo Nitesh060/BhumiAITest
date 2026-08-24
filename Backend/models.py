@@ -167,6 +167,10 @@ class Farmer(Base):
     village = Column(String, nullable=True)
     district = Column(String, nullable=True)
     state = Column(String, nullable=True)
+    # Null for every farmer registered before this column existed —
+    # deliberately left visible to all field officers rather than
+    # hidden from everyone (see farm_management_service.can_access_farmer).
+    created_by_user_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime, default=_now)
     updated_at = Column(DateTime, default=_now, onupdate=_now)
 
@@ -180,6 +184,7 @@ class Farmer(Base):
             "village": self.village,
             "district": self.district,
             "state": self.state,
+            "created_by_user_id": self.created_by_user_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "farm_count": len(self.farms) if self.farms is not None else 0,

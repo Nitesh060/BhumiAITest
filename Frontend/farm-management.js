@@ -292,7 +292,22 @@ function selectFarmer(id, name) {
 
 // ---- Farm CRUD ----
 async function loadFarms(farmerId) {
+    const errorBox = document.getElementById("error-box");
     const res = await bhumiAuthFetch(`${API_BASE_URL}/farmers/${farmerId}/farms`);
+    if (!res.ok) {
+        // Previously a non-OK response here (e.g. a 403 when a field
+        // officer's stale/shared link points at a farmer they don't own)
+        // fell straight through to "no farms yet" below — indistinguishable
+        // from the farmer genuinely having zero farms.
+        const err = await res.json().catch(() => ({}));
+        errorBox.textContent = err.error || `Could not load farms (server said: ${res.status}).`;
+        errorBox.style.display = "block";
+        document.getElementById("farm-list").innerHTML = "";
+        document.getElementById("ground-truth-panel").style.display = "none";
+        selectedFarmId = null;
+        return;
+    }
+    errorBox.style.display = "none";
     const data = await res.json();
     const farms = data.farms || [];
 
@@ -381,7 +396,18 @@ function selectFarm(farmId, label) {
 }
 
 async function loadGroundTruth(farmId) {
+    const errorBox = document.getElementById("error-box");
     const res = await bhumiAuthFetch(`${API_BASE_URL}/farms/${farmId}/ground-truth`);
+    if (!res.ok) {
+        // Same reasoning as loadFarms — don't let a 403/other error read
+        // as "no observations yet".
+        const err = await res.json().catch(() => ({}));
+        errorBox.textContent = err.error || `Could not load observations (server said: ${res.status}).`;
+        errorBox.style.display = "block";
+        document.getElementById("ground-truth-list").innerHTML = "";
+        return;
+    }
+    errorBox.style.display = "none";
     const data = await res.json();
     const observations = data.observations || [];
 

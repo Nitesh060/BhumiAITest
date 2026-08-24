@@ -1403,8 +1403,18 @@ async function submitDiagnosis() {
         } else {
             const symptoms = (data.symptoms_observed || []).map(s => `<li>${escapeHTML(s)}</li>`).join("");
             const remedies = (data.remedy_steps || []).map(s => `<li>${escapeHTML(s)}</li>`).join("");
+            // A "Low" bucket means the model itself wasn't sure — the
+            // diagnosis text below is still its best single guess, but
+            // presenting it with the same visual weight as a confident
+            // reading makes a shaky guess look like a solid answer.
+            // Flag it up front instead of leaving "Low" as just one
+            // colored word buried in a row of otherwise-equal facts.
+            const lowConfidenceBanner = data.confidence === "Low"
+                ? `<p class="diag-low-confidence">⚠ The model wasn't confident about this photo — the guess below may be wrong. Try a closer, well-lit photo of a single leaf on a plain background.</p>`
+                : "";
 
             diagnoseResult.innerHTML = `
+                ${lowConfidenceBanner}
                 <div class="diag-row">
                     <span class="diag-label">Crop (guess)</span>
                     <span>${escapeHTML(data.crop_guess || "Unclear")}</span>

@@ -1280,6 +1280,14 @@ body {
     margin: 0 0 14px;
 }
 
+.diagnose-tips {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin: -8px 0 14px;
+    padding-left: 18px;
+}
+
 .upload-drop {
     display: flex;
     align-items: center;
@@ -1372,6 +1380,17 @@ body {
 .diag-not-plant {
     margin: 0;
     color: var(--text-muted);
+}
+
+.diag-low-confidence {
+    margin: 0 0 12px;
+    padding: 8px 10px;
+    color: var(--danger);
+    background: var(--danger-bg);
+    border-left: 3px solid var(--danger);
+    border-radius: var(--radius-sm);
+    font-size: 0.72rem;
+    line-height: 1.5;
 }
 
 .diag-trained-model {

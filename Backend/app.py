@@ -26,22 +26,29 @@ from crop_recommendation import recommend_crop
 from gemini_service import generate_insight, generate_chat_reply, generate_spectral_insight, generate_farm_advisor, generate_risk_analysis
 
 try:
-    # Real trained-model cross-check for /diagnose, alongside Gemini's
-    # general-purpose vision call — see ROADMAP.md Phase 14 and
-    # plant_disease_model.py. Guarded because torch/torchvision are a
-    # real deploy-size/memory cost (this app has hit a Render free-tier
-    # OOM from oversized deps once before — see requirements.txt) —
-    # if the import ever fails in some environment, /diagnose should
-    # still work with Gemini alone rather than the whole app failing to
-    # start.
+    # The trained-model classifier /diagnose runs — see ROADMAP.md Phase
+    # 14 and plant_disease_model.py. Guarded because torch/torchvision
+    # are a real deploy-size/memory cost (this app has hit a Render
+    # free-tier OOM from oversized deps once before — see
+    # requirements.txt) — if the import ever fails in some environment,
+    # /diagnose should return a clear 503 rather than the whole app
+    # failing to start.
     import plant_disease_model
     from PIL import Image as PILImage
+    from PIL import ImageFile as PILImageFile
+    from PIL import ImageOps as PILImageOps
+    # Phone-camera uploads are occasionally cut short by a flaky mobile
+    # connection — PIL raises on a truncated JPEG by default, which
+    # turned every one of those into an opaque 503 instead of just
+    # decoding the image data that did arrive.
+    PILImageFile.LOAD_TRUNCATED_IMAGES = True
 except Exception:
     plant_disease_model = None
     PILImage = None
+    PILImageOps = None
     logging.getLogger(__name__).warning(
         "plant_disease_model unavailable (torch/torchvision/Pillow not installed?) "
-        "— trained-model diagnosis cross-check disabled, Gemini diagnosis still works"
+        "— /diagnose will return 503 until the checkpoint/deps are present"
     )
 from spectral_service import calculate_spectral_intelligence
 from enrichment_service import (
@@ -862,6 +869,15 @@ def _diagnose_with_trained_model(image_bytes: bytes) -> Optional[dict]:
         return None
     try:
         image = PILImage.open(io.BytesIO(image_bytes))
+        # Phone cameras store an EXIF orientation tag rather than rotating
+        # the actual pixels — PIL.Image.open() ignores that tag, so a
+        # portrait photo taken sideways/upside-down (a common phone-camera
+        # default) was being fed to the model rotated 90/180/270 degrees
+        # off from how a person actually sees the leaf. exif_transpose
+        # applies the tag and strips it, so what the model sees matches
+        # the preview the farmer sees on their own screen.
+        if PILImageOps is not None:
+            image = PILImageOps.exif_transpose(image)
         prediction = plant_disease_model.classify_image(image)
     except Exception:
         logger.exception("Trained plant-disease model inference failed")

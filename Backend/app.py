@@ -1029,6 +1029,16 @@ def _db_unavailable_response():
     return jsonify({"error": "Database not configured. Set DATABASE_URL (Neon Postgres) on the server to enable Farm Management."}), 503
 
 
+def _farmer_access_denied_response(farmer):
+    """A field officer only gets to act on farmers they registered
+    themselves (plus legacy farmers with no recorded owner) — see
+    farm_management_service.can_access_farmer. Returns a 403 response
+    to return immediately, or None if the request may proceed."""
+    if not fms.can_access_farmer(farmer, getattr(request, "user", None)):
+        return jsonify({"error": "You don't have access to this farmer's records"}), 403
+    return None
+
+
 @app.route("/farmers", methods=["POST"])
 @auth_service.require_auth()
 def create_farmer_route():
@@ -1043,6 +1053,7 @@ def create_farmer_route():
         farmer = fms.create_farmer(
             session, name=body["name"], phone=body.get("phone"),
             village=body.get("village"), district=body.get("district"), state=body.get("state"),
+            created_by_user_id=request.user.get("user_id"),
         )
         return jsonify(farmer.to_dict()), 201
     finally:
@@ -1056,7 +1067,7 @@ def list_farmers_route():
         return _db_unavailable_response()
     session = db_module.get_session()
     try:
-        farmers = fms.list_farmers(session, search=request.args.get("search"))
+        farmers = fms.list_farmers(session, search=request.args.get("search"), requester=request.user)
         return jsonify({"farmers": [f.to_dict() for f in farmers]}), 200
     finally:
         session.close()
@@ -1072,6 +1083,9 @@ def get_farmer_route(farmer_id):
         farmer = fms.get_farmer(session, farmer_id)
         if not farmer:
             return jsonify({"error": "Farmer not found"}), 404
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
         return jsonify(farmer.to_dict(include_farms=True)), 200
     finally:
         session.close()
@@ -1085,9 +1099,13 @@ def update_farmer_route(farmer_id):
     body = request.get_json(silent=True) or {}
     session = db_module.get_session()
     try:
-        farmer = fms.update_farmer(session, farmer_id, **body)
+        farmer = fms.get_farmer(session, farmer_id)
         if not farmer:
             return jsonify({"error": "Farmer not found"}), 404
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
+        farmer = fms.update_farmer(session, farmer_id, **body)
         return jsonify(farmer.to_dict()), 200
     finally:
         session.close()
@@ -1120,14 +1138,19 @@ def create_farm_route(farmer_id):
 
     session = db_module.get_session()
     try:
+        farmer = fms.get_farmer(session, farmer_id)
+        if not farmer:
+            return jsonify({"error": "Farmer not found"}), 404
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
+
         farm = fms.create_farm(
             session, farmer_id=farmer_id, lat=float(lat), lng=float(lng),
             label=body.get("label"), polygon=body.get("polygon"),
             survey_method=body.get("survey_method", "point_only"),
             land_use_type=body.get("land_use_type"), survey_number=body.get("survey_number"),
         )
-        if not farm:
-            return jsonify({"error": "Farmer not found"}), 404
         return jsonify(farm.to_dict()), 201
     finally:
         session.close()
@@ -1140,6 +1163,12 @@ def list_farms_route(farmer_id):
         return _db_unavailable_response()
     session = db_module.get_session()
     try:
+        farmer = fms.get_farmer(session, farmer_id)
+        if not farmer:
+            return jsonify({"error": "Farmer not found"}), 404
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
         farms = fms.list_farms_for_farmer(session, farmer_id)
         return jsonify({"farms": [f.to_dict() for f in farms]}), 200
     finally:
@@ -1156,6 +1185,10 @@ def get_farm_route(farm_id):
         farm = fms.get_farm(session, farm_id)
         if not farm:
             return jsonify({"error": "Farm not found"}), 404
+        farmer = fms.get_farmer(session, farm.farmer_id)
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
         return jsonify(farm.to_dict()), 200
     finally:
         session.close()
@@ -1169,9 +1202,14 @@ def update_farm_route(farm_id):
     body = request.get_json(silent=True) or {}
     session = db_module.get_session()
     try:
-        farm = fms.update_farm(session, farm_id, **body)
+        farm = fms.get_farm(session, farm_id)
         if not farm:
             return jsonify({"error": "Farm not found"}), 404
+        farmer = fms.get_farmer(session, farm.farmer_id)
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
+        farm = fms.update_farm(session, farm_id, **body)
         return jsonify(farm.to_dict()), 200
     finally:
         session.close()
@@ -1230,6 +1268,10 @@ def create_ground_truth_route(farm_id):
         farm = fms.get_farm(session, farm_id)
         if not farm:
             return jsonify({"error": "Farm not found"}), 404
+        farmer = fms.get_farmer(session, farm.farmer_id)
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
 
         try:
             obs = ground_truth_service.create_observation(
@@ -1262,6 +1304,13 @@ def list_ground_truth_route(farm_id):
         return _db_unavailable_response()
     session = db_module.get_session()
     try:
+        farm = fms.get_farm(session, farm_id)
+        if not farm:
+            return jsonify({"error": "Farm not found"}), 404
+        farmer = fms.get_farmer(session, farm.farmer_id)
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
         observations = ground_truth_service.list_observations_for_farm(session, farm_id)
         return jsonify({"observations": [o.to_dict() for o in observations]}), 200
     finally:
@@ -1865,6 +1914,12 @@ def get_consent_route(farmer_id):
         return _db_unavailable_response()
     session = db_module.get_session()
     try:
+        farmer = fms.get_farmer(session, farmer_id)
+        if not farmer:
+            return jsonify({"error": "Farmer not found"}), 404
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
         records = fms.get_consents_for_farmer(session, farmer_id)
         return jsonify({"consents": [r.to_dict() for r in records]}), 200
     finally:
@@ -1883,6 +1938,12 @@ def set_consent_route(farmer_id):
 
     session = db_module.get_session()
     try:
+        farmer = fms.get_farmer(session, farmer_id)
+        if not farmer:
+            return jsonify({"error": "Farmer not found"}), 404
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
         record = fms.set_consent(session, farmer_id, consent_type, bool(granted), notes=body.get("notes"))
         governance_service.log_event(
             session, event_type="consent_change",
@@ -1909,6 +1970,12 @@ def request_deletion_route(farmer_id):
     body = request.get_json(silent=True) or {}
     session = db_module.get_session()
     try:
+        farmer = fms.get_farmer(session, farmer_id)
+        if not farmer:
+            return jsonify({"error": "Farmer not found"}), 404
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
         result = fms.request_deletion(session, farmer_id, notes=body.get("notes"))
         governance_service.log_event(
             session, event_type="deletion_request", summary=f"Deletion requested for farmer {farmer_id}",
@@ -1927,6 +1994,12 @@ def create_loan_route(farmer_id):
     body = request.get_json(silent=True) or {}
     session = db_module.get_session()
     try:
+        farmer = fms.get_farmer(session, farmer_id)
+        if not farmer:
+            return jsonify({"error": "Farmer not found"}), 404
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
         loan = governance_service.create_loan(
             session, farmer_id=farmer_id, farm_id=body.get("farm_id"),
             requested_amount_rs=body.get("requested_amount_rs"),
@@ -1950,6 +2023,12 @@ def list_loans_route(farmer_id):
         return _db_unavailable_response()
     session = db_module.get_session()
     try:
+        farmer = fms.get_farmer(session, farmer_id)
+        if not farmer:
+            return jsonify({"error": "Farmer not found"}), 404
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
         loans = governance_service.list_loans_for_farmer(session, farmer_id)
         return jsonify({"loans": [l.to_dict() for l in loans]}), 200
     finally:
@@ -1972,6 +2051,16 @@ def advance_loan_route(loan_id):
 
     session = db_module.get_session()
     try:
+        existing_loan = governance_service.get_loan(session, loan_id)
+        if not existing_loan:
+            return jsonify({"error": "Loan not found"}), 404
+        farmer = fms.get_farmer(session, existing_loan.farmer_id)
+        if not farmer:
+            return jsonify({"error": "Loan not found"}), 404
+        denied = _farmer_access_denied_response(farmer)
+        if denied:
+            return denied
+
         result = governance_service.advance_loan_stage(
             session, loan_id, new_stage,
             approved_ceiling_rs=body.get("approved_ceiling_rs"),

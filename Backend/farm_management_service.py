@@ -28,24 +28,52 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def create_farmer(db: Session, name: str, phone: str = None, village: str = None,
-                   district: str = None, state: str = None) -> Farmer:
-    farmer = Farmer(name=name, phone=phone, village=village, district=district, state=state)
+                   district: str = None, state: str = None,
+                   created_by_user_id: str = None) -> Farmer:
+    farmer = Farmer(
+        name=name, phone=phone, village=village, district=district, state=state,
+        created_by_user_id=created_by_user_id,
+    )
     db.add(farmer)
     db.commit()
     db.refresh(farmer)
     return farmer
 
 
-def list_farmers(db: Session, search: Optional[str] = None) -> List[Farmer]:
+def list_farmers(db: Session, search: Optional[str] = None, requester: Optional[Dict[str, Any]] = None) -> List[Farmer]:
+    """A field officer only sees farmers they registered themselves,
+    plus any legacy farmer recorded before created_by_user_id existed
+    (created_by_user_id IS NULL) — those stay visible to every field
+    officer rather than becoming invisible to everyone the moment this
+    column was added. An admin (or no requester, e.g. an internal
+    caller) sees everything, unfiltered.
+    """
     q = db.query(Farmer)
     if search:
         like = f"%{search}%"
         q = q.filter((Farmer.name.ilike(like)) | (Farmer.phone.ilike(like)) | (Farmer.village.ilike(like)))
+    if requester and requester.get("role") != "admin":
+        q = q.filter(
+            (Farmer.created_by_user_id == requester.get("user_id")) | (Farmer.created_by_user_id.is_(None))
+        )
     return q.order_by(Farmer.created_at.desc()).all()
 
 
 def get_farmer(db: Session, farmer_id: str) -> Optional[Farmer]:
     return db.query(Farmer).filter(Farmer.id == farmer_id).first()
+
+
+def can_access_farmer(farmer: Farmer, requester: Optional[Dict[str, Any]]) -> bool:
+    """Same visibility rule as list_farmers, applied to a single farmer
+    a caller already has the ID for (GET/PUT and every nested
+    farm/loan/ground-truth/consent route) — an admin, or a farmer this
+    field officer registered themselves, or a legacy farmer with no
+    recorded owner (created_by_user_id IS NULL)."""
+    if not requester:
+        return True  # internal/no-requester caller (e.g. a background job) — unrestricted, matches list_farmers
+    if requester.get("role") == "admin":
+        return True
+    return farmer.created_by_user_id is None or farmer.created_by_user_id == requester.get("user_id")
 
 
 # Only these keys are settable via update_farmer/update_farm's **fields —

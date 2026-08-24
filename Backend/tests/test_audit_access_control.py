@@ -10,6 +10,14 @@
 3. pdf_report._safe_image fetched whatever URL a client-supplied
    satellite_thumbnail named (blind SSRF) — now only accepts
    *.googleapis.com hosts.
+4. Every field officer could see and act on every OTHER field
+   officer's farmers/farms/loans — there was no ownership concept at
+   all. Farmer now records created_by_user_id, and
+   can_access_farmer()/list_farmers() enforce it: a field officer only
+   sees/acts on farmers they registered themselves, plus legacy
+   farmers with no recorded owner (created_by_user_id IS NULL, so
+   existing data isn't hidden from everyone the moment this shipped).
+   An admin is unrestricted.
 """
 import os
 import sys
@@ -201,3 +209,88 @@ class TestSafeImageHostAllowlist:
         monkeypatch.setattr(pdf_report.requests, "get", lambda *a, **k: FakeResp())
         result = pdf_report._safe_image("https://earthengine.googleapis.com/v1/thumb.png", 174)
         assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# Field-officer data scoping (a farmer is only visible to the field
+# officer who registered them, plus legacy/unassigned farmers)
+# ---------------------------------------------------------------------------
+
+ADMIN = {"user_id": "admin-1", "role": "admin"}
+OFFICER_A = {"user_id": "officer-a", "role": "field_officer"}
+OFFICER_B = {"user_id": "officer-b", "role": "field_officer"}
+
+
+class TestCanAccessFarmer:
+    def test_admin_can_access_anyones_farmer(self, db_session):
+        farmer = fms.create_farmer(db_session, name="Ram", created_by_user_id=OFFICER_A["user_id"])
+        assert fms.can_access_farmer(farmer, ADMIN) is True
+
+    def test_owner_can_access_their_own_farmer(self, db_session):
+        farmer = fms.create_farmer(db_session, name="Ram", created_by_user_id=OFFICER_A["user_id"])
+        assert fms.can_access_farmer(farmer, OFFICER_A) is True
+
+    def test_other_officer_cannot_access(self, db_session):
+        farmer = fms.create_farmer(db_session, name="Ram", created_by_user_id=OFFICER_A["user_id"])
+        assert fms.can_access_farmer(farmer, OFFICER_B) is False
+
+    def test_legacy_farmer_with_no_owner_is_visible_to_any_officer(self, db_session):
+        """Farmers registered before created_by_user_id existed must
+        not become invisible to everyone the moment this shipped."""
+        farmer = fms.create_farmer(db_session, name="Legacy Farmer")
+        assert farmer.created_by_user_id is None
+        assert fms.can_access_farmer(farmer, OFFICER_A) is True
+        assert fms.can_access_farmer(farmer, OFFICER_B) is True
+
+    def test_no_requester_is_unrestricted(self, db_session):
+        """An internal caller (no HTTP request, e.g. a background job)
+        passing no requester at all gets the old unrestricted behavior."""
+        farmer = fms.create_farmer(db_session, name="Ram", created_by_user_id=OFFICER_A["user_id"])
+        assert fms.can_access_farmer(farmer, None) is True
+
+
+class TestListFarmersScoping:
+    def test_field_officer_sees_only_their_own_and_legacy_farmers(self, db_session):
+        fms.create_farmer(db_session, name="A's farmer", created_by_user_id=OFFICER_A["user_id"])
+        fms.create_farmer(db_session, name="B's farmer", created_by_user_id=OFFICER_B["user_id"])
+        fms.create_farmer(db_session, name="Legacy farmer")
+
+        results = fms.list_farmers(db_session, requester=OFFICER_A)
+        names = {f.name for f in results}
+
+        assert names == {"A's farmer", "Legacy farmer"}
+
+    def test_admin_sees_everyone(self, db_session):
+        fms.create_farmer(db_session, name="A's farmer", created_by_user_id=OFFICER_A["user_id"])
+        fms.create_farmer(db_session, name="B's farmer", created_by_user_id=OFFICER_B["user_id"])
+
+        results = fms.list_farmers(db_session, requester=ADMIN)
+
+        assert {f.name for f in results} == {"A's farmer", "B's farmer"}
+
+    def test_no_requester_is_unfiltered(self, db_session):
+        fms.create_farmer(db_session, name="A's farmer", created_by_user_id=OFFICER_A["user_id"])
+        fms.create_farmer(db_session, name="B's farmer", created_by_user_id=OFFICER_B["user_id"])
+
+        results = fms.list_farmers(db_session)
+
+        assert {f.name for f in results} == {"A's farmer", "B's farmer"}
+
+    def test_search_still_combines_with_ownership_filter(self, db_session):
+        fms.create_farmer(db_session, name="Ramesh", created_by_user_id=OFFICER_A["user_id"])
+        fms.create_farmer(db_session, name="Ramesh", created_by_user_id=OFFICER_B["user_id"])
+
+        results = fms.list_farmers(db_session, search="Ramesh", requester=OFFICER_A)
+
+        assert len(results) == 1
+        assert results[0].created_by_user_id == OFFICER_A["user_id"]
+
+
+class TestFarmerCreationRecordsOwner:
+    def test_create_farmer_stores_creator(self, db_session):
+        farmer = fms.create_farmer(db_session, name="Ram", created_by_user_id="officer-1")
+        assert farmer.created_by_user_id == "officer-1"
+
+    def test_create_farmer_without_creator_is_legacy_style(self, db_session):
+        farmer = fms.create_farmer(db_session, name="Ram")
+        assert farmer.created_by_user_id is None

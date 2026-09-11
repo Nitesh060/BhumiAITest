@@ -15,6 +15,7 @@ See train_land_cover.py to train it on your own labelled patches.
 from __future__ import annotations
 
 import os
+import threading
 from typing import Dict, Optional
 
 import numpy as np
@@ -61,24 +62,38 @@ class LandCoverCNN(nn.Module):
 
 _model: Optional[LandCoverCNN] = None
 _load_attempted = False
+# See plant_disease_model._load_model — identical check-then-act race. A
+# request arriving while the checkpoint was loading saw `_load_attempted`
+# already True and was told no model exists.
+_model_lock = threading.Lock()
 
 
 def _load_model() -> Optional[LandCoverCNN]:
     global _model, _load_attempted
     if _model is not None:
         return _model
-    if _load_attempted:
-        return None
-    _load_attempted = True
 
-    if not os.path.exists(MODEL_PATH):
-        return None
+    with _model_lock:
+        if _model is not None:
+            return _model
+        if _load_attempted:
+            return None
+        _load_attempted = True
 
-    m = LandCoverCNN()
-    m.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
-    m.eval()
-    _model = m
-    return _model
+        if not os.path.exists(MODEL_PATH):
+            return None
+
+        m = LandCoverCNN()
+        # weights_only=True stops a tampered checkpoint from executing
+        # arbitrary code during unpickling.
+        try:
+            state = torch.load(MODEL_PATH, map_location="cpu", weights_only=True)
+        except TypeError:
+            state = torch.load(MODEL_PATH, map_location="cpu")
+        m.load_state_dict(state)
+        m.eval()
+        _model = m
+        return _model
 
 
 def classify_patch(patch: np.ndarray) -> Optional[Dict]:

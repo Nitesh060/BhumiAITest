@@ -14,6 +14,10 @@ bonus signals) — no caller is forced to change.
 
 from typing import Dict, List, Optional
 
+# Below this many of the five core signals (NDVI, NDMI, rainfall,
+# temperature, groundwater proxy), no recommendation is made at all.
+MIN_SIGNALS_REQUIRED = 3
+
 
 def recommend_crop(
     ndvi: float,
@@ -24,6 +28,31 @@ def recommend_crop(
     evi: Optional[float] = None,
     ndre: Optional[float] = None,
 ) -> Dict:
+
+    # Every input used to be coerced with `x or 0`, which made a MISSING
+    # signal indistinguishable from a genuinely bad one. With all five
+    # absent, each threshold simply failed, the dry-condition branches fired
+    # on the zeros, and the function returned "Groundnut, 35%" — a confident
+    # crop recommendation produced from no data at all, identical to what a
+    # real poor farm scores.
+    signals = {
+        "ndvi": ndvi is not None, "ndmi": ndmi is not None,
+        "rainfall": rainfall is not None, "temperature": temperature is not None,
+        "groundwater": groundwater is not None,
+    }
+    signals_available = sum(signals.values())
+    if signals_available < MIN_SIGNALS_REQUIRED:
+        return {
+            "available": False,
+            "primary": None,
+            "secondary": None,
+            "all": [],
+            "reason": (
+                f"Only {signals_available} of {len(signals)} core signals available "
+                f"(need at least {MIN_SIGNALS_REQUIRED}) — not enough data to recommend a crop."
+            ),
+            "signals_used": {**signals, "evi": evi is not None, "ndre": ndre is not None},
+        }
 
     ndvi = ndvi or 0
     ndmi = ndmi or 0
@@ -148,11 +177,10 @@ def recommend_crop(
     crops.sort(key=lambda x: x["score"], reverse=True)
 
     return {
+        "available": True,
         "primary": crops[0],
         "secondary": crops[1],
         "all": crops,
-        "signals_used": {
-            "evi": evi is not None,
-            "ndre": ndre is not None,
-        },
+        "signals_used": {**signals, "evi": evi is not None, "ndre": ndre is not None},
+        "signals_available": signals_available,
     }

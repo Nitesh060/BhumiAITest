@@ -32,7 +32,7 @@ const BHUMI_API_BASE_URL = window.FARMSCORE_API_URL;
    main dashboard (app.js) and the Extended Report page (report.js).
    Renders enrichment.farmscore_breakdown from /calculate — the ONE
    Bhumi AI FarmScore's own composition: Base (0-200) + Average Kharif
-   Score (0-400) + Average Rabi Score (0-400), rescaled to a 400-1000
+   Score (0-400) + Average Rabi Score (0-400), summed to a 0-1000
    final score (computed in Backend/seasonal_score_service.py). This is
    NOT a second score — overall_score here always equals the main
    FarmScore shown elsewhere on the page.
@@ -42,7 +42,7 @@ const BHUMI_API_BASE_URL = window.FARMSCORE_API_URL;
 // seasonal_score_service.assign_grade) — keep both in sync if those
 // thresholds ever change.
 const FARMSCORE_BANDS = [
-    { from: 400, to: 625, color: "#ef4444", label: "Poor", risk: "Highest" },
+    { from: 0, to: 625, color: "#ef4444", label: "Poor", risk: "Highest" },
     { from: 626, to: 725, color: "#f59e0b", label: "Fair", risk: "High" },
     { from: 726, to: 790, color: "#eab308", label: "Good", risk: "Medium" },
     { from: 791, to: 870, color: "#84cc16", label: "Very Good", risk: "Low" },
@@ -128,7 +128,7 @@ function renderFarmScoreBreakdown(rootEl, breakdown) {
     if (emptyEl) emptyEl.style.display = "none";
     if (contentEl) contentEl.style.display = "block";
 
-    renderSpeedometerGauge(rootEl.querySelector(".bss-gauge-svg"), breakdown.overall_score, 400, 1000, FARMSCORE_BANDS);
+    renderSpeedometerGauge(rootEl.querySelector(".bss-gauge-svg"), breakdown.overall_score, 0, 1000, FARMSCORE_BANDS);
     const scoreEl = rootEl.querySelector(".bss-overall-score");
     if (scoreEl) scoreEl.textContent = breakdown.overall_score;
     const labelEl = rootEl.querySelector(".bss-overall-label");

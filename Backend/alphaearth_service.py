@@ -96,6 +96,13 @@ def register_alphaearth_routes(app):
         except ValueError:
             return jsonify({"error": "Valid lat and lng are required"}), 400
 
+        # /calculate range-checks its coordinates; this endpoint did not, so
+        # out-of-range values were handed straight to Earth Engine.
+        if not (-90 <= lat <= 90):
+            return jsonify({"error": f"Latitude out of range: {lat}"}), 400
+        if not (-180 <= lng <= 180):
+            return jsonify({"error": f"Longitude out of range: {lng}"}), 400
+
         try:
             year = int(request.args.get("year", DEFAULT_YEAR))
             compare_year_raw = request.args.get("compare_year")

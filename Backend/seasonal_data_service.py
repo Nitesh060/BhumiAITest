@@ -28,7 +28,13 @@ def latest_season_windows(today: Optional[date] = None) -> Dict[str, Dict[str, A
         k_end = min(today + timedelta(days=1), date(y, 11, 1))
     else:
         k_year = y - 1
-        k_end = date(y, 11, 1)
+        # `date(k_year, ...)`, not `date(y, ...)`. With `y` the window ran to
+        # 1 Nov of the CURRENT year while starting 1 Jun of the previous one —
+        # a 17-month window that swallowed the following Kharif and the Rabi
+        # in between. Every January-May request therefore averaged two Kharif
+        # seasons together and called the result one season. It also queried
+        # up to 10 months into the future.
+        k_end = date(k_year, 11, 1)
     k_start = date(k_year, 6, 1)
 
     # Rabi: use the latest completed season when available; otherwise latest available Rabi-to-date.
@@ -42,6 +48,12 @@ def latest_season_windows(today: Optional[date] = None) -> Dict[str, Dict[str, A
         r_year = y - 2
         r_end = date(y - 1, 5, 1)
     r_start = date(r_year, 11, 1)
+    # Clamp to today, exactly as the Kharif branch does. Without it, a Rabi
+    # season that had only just started (any request after 1 Nov) was given a
+    # window running to the following 1 May — months into the future — and
+    # `complete` was computed from that fabricated end date, so six weeks of
+    # data was reported as a finished season.
+    r_end = min(r_end, today + timedelta(days=1))
 
     return {
         "kharif": {"label": f"Kharif {k_year}", "start": k_start.isoformat(), "end": k_end.isoformat(), "complete": k_end >= date(k_year, 11, 1)},
@@ -125,9 +137,22 @@ def _season_weather(lat: float, lng: float, polygon: Optional[dict], start: str,
     solar = _reduce_mean_with_retry(solar_img, lat, lng, polygon, ERA5_LAND_SCALE_M)
     solar_mj = solar / 1_000_000 if solar is not None else None
 
+    # Seasonal 2 m air temperature. Previously no per-season air temperature
+    # was fetched at all, so app.py fell back to injecting the same ANNUAL
+    # figure into both Kharif and Rabi. That is a whole-year mean standing in
+    # for two seasons with very different temperature regimes, and because it
+    # was identical in both it carried its 5% weight without distinguishing
+    # them. It also stopped the LST-duplicate check in
+    # comprehensive_score_service from ever firing, so temperature was
+    # effectively counted twice. ERA5-Land is already being queried here for
+    # solar radiation, so this is the same call with one more band.
+    air_img = ee.ImageCollection(ERA5).filterDate(start, end).filterBounds(era5_region).select("temperature_2m").mean()
+    air_k = _reduce_mean_with_retry(air_img, lat, lng, polygon, ERA5_LAND_SCALE_M)
+    air_temp = air_k - 273.15 if air_k is not None else None
+
     gdd_img = temp_coll.map(lambda img: img.multiply(0.02).subtract(273.15).subtract(10).max(0)).sum()
     gdd = _reduce_mean_with_retry(gdd_img, lat, lng, polygon, MODIS_LST_SCALE_M)
-    return {"rainfall": rain, "lst": temp, "solar_radiation": solar_mj, "gdd": gdd}
+    return {"rainfall": rain, "lst": temp, "solar_radiation": solar_mj, "gdd": gdd, "air_temp": air_temp}
 
 
 def _season_spi(lat: float, lng: float, polygon: Optional[dict], start: str, end: str, history_years: int = 5) -> Optional[float]:
@@ -213,7 +238,8 @@ def fetch_seasonal_comprehensive_data(lat: float, lng: float, polygon: Optional[
         }
 
     keys = ["ndvi", "evi", "savi", "msavi", "ndre", "ndmi", "ndwi", "ci_green", "ci_rededge",
-            "vv", "vh", "vh_vv", "rvi", "rainfall", "solar_radiation", "spi", "spei", "gdd", "lst"]
+            "vv", "vh", "vh_vv", "rvi", "rainfall", "solar_radiation", "spi", "spei", "gdd", "lst",
+            "air_temp"]
     combined = {}
     for key in keys:
         vals = [r[key] for r in season_results.values() if r.get(key) is not None]

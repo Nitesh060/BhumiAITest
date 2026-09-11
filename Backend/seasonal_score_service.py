@@ -66,6 +66,61 @@ RISK_RATING_BY_GRADE = {
     "Poor": "Highest",
 }
 
+# A season needs at least this many real parameters before its score means
+# anything. Below the threshold the season is treated as "no data" and gets
+# the floor below instead of a score derived from one or two stray values.
+# Without this guard a season holding a single parameter scored that one
+# parameter's normalised value as the WHOLE season — routinely 400/400.
+MIN_SEASON_PARAMETERS = 3
+
+# Score given to a season with no usable data — matching the reference
+# report, where every "no crop grown / not classified" season is booked at
+# exactly 200/400 and still counts toward the 1000-point denominator. It is
+# a floor, not an exclusion: a farm that grows nothing in Rabi must score
+# below an otherwise identical farm that does.
+NO_DATA_SEASON_FLOOR_PCT = 50.0
+
+# The overall score is the raw Base + Kharif + Rabi total on its own
+# 0-1000 scale, and the grade bands are read off that same scale. The
+# previous code rescaled the raw total onto 400-1000 FIRST and then applied
+# bands that were already defined for 0-1000, so every farm was lifted by
+# the 400-point floor and compressed into the top bands.
+SCORE_MIN = 0
+SCORE_MAX = 1000
+
+
+def _season_window(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Surface the season's own window alongside its score.
+
+    `latest_season_windows()` computes a `complete` flag for each season but
+    nothing consumed it, so a Kharif that was ten days old scored exactly
+    like a harvested one and the report gave no hint which it was. Carrying
+    it here lets the UI/PDF label an in-progress season, and drops the
+    confidence rather than presenting partial-canopy data as a final result.
+    """
+    meta = meta or {}
+    complete = meta.get("complete")
+    return {
+        "season_label": meta.get("label"),
+        "window_start": meta.get("start"),
+        "window_end": meta.get("end"),
+        "season_complete": complete,
+        "in_progress": complete is False,
+    }
+
+
+def _grade_out_of(score: Optional[float], max_score: float) -> str:
+    """Grade a sub-score (e.g. 278 out of 400) by projecting it onto the
+    same 0-1000 scale the bands are defined on. 278/400 -> 695 -> "Fair".
+
+    The old code did `400 + (score / max) * 600` first, which squeezed the
+    whole range into 400-1000 and then compared it against bands already
+    written for 0-1000 — so 237/400 came out "Good" instead of "Poor".
+    """
+    if score is None or not max_score:
+        return "No data"
+    return assign_grade(score / max_score * SCORE_MAX)
+
 
 def compute_base_score(irrigation: Optional[Dict[str, Any]], cropping_intensity: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """0-200. Mirrors SatSource's own stated Base Score definition
@@ -104,35 +159,50 @@ def compute_base_score(irrigation: Optional[Dict[str, Any]], cropping_intensity:
     return {
         "score": base_score,
         "max_score": 200,
-        "grade": assign_grade(round(400 + base_pct * 6)) if base_pct is not None else "No data",
+        "grade": _grade_out_of(base_score, 200),
         "irrigation_condition": "Irrigated" if irrigation.get("likely_irrigated") else ("Rainfed" if irrigation.get("likely_irrigated") is False else "Not available"),
         "cropping_intensity": intensity_label or "Not available",
         "data_available": base_score is not None,
     }
 
 
-def _compute_season_subscore(raw_values: Optional[Dict[str, Optional[float]]], weights: Optional[Dict[str, float]], max_score: int) -> Dict[str, Any]:
+def _compute_season_subscore(raw_values: Optional[Dict[str, Optional[float]]], weights: Optional[Dict[str, float]], max_score: int, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Runs the full 20-parameter comprehensive-score formula against
     ONE season's raw values only, then scales its 0-100 result onto
     this season's share of the overall 1000-point scale (400 for
     Kharif/Rabi)."""
     comp_result = compute_comprehensive_score(raw_values or {}, weights=weights)
     score_0_100 = comp_result.get("score_0_100")
-    if score_0_100 is None:
+    used = comp_result.get("parameters_used", 0)
+
+    # Too little signal to score this season honestly. Fall back to the
+    # no-data floor rather than either (a) scoring one stray parameter as
+    # the entire season, or (b) dropping the season out of the total.
+    if score_0_100 is None or used < MIN_SEASON_PARAMETERS:
+        floored = round(NO_DATA_SEASON_FLOOR_PCT / 100 * max_score)
         return {
-            "score": None, "max_score": max_score, "grade": "No data", "data_available": False,
-            "parameters_used": 0, "parameters_total": comp_result.get("parameters_total", 20),
+            "score": floored,
+            "max_score": max_score,
+            "grade": _grade_out_of(floored, max_score),
+            "data_available": False,
+            "scored_from": "no-data floor",
+            "parameters_used": used,
+            "parameters_total": comp_result.get("parameters_total", 20),
             "components": adapt_components(comp_result),
+            **_season_window(meta),
         }
+
     scaled = round(score_0_100 / 100 * max_score)
-    # Grade this season's own contribution on the same 400-1000 band
-    # scale, purely for the per-factor display (e.g. "Good (312/400)")
-    # — not part of the overall score's own grading.
-    equivalent_400_1000 = round(400 + (scaled / max_score) * 600)
     return {
-        "score": scaled, "max_score": max_score, "grade": assign_grade(equivalent_400_1000), "data_available": True,
-        "parameters_used": comp_result["parameters_used"], "parameters_total": comp_result["parameters_total"],
+        "score": scaled,
+        "max_score": max_score,
+        "grade": _grade_out_of(scaled, max_score),
+        "data_available": True,
+        "scored_from": "observed",
+        "parameters_used": used,
+        "parameters_total": comp_result["parameters_total"],
         "components": adapt_components(comp_result),
+        **_season_window(meta),
     }
 
 
@@ -168,21 +238,23 @@ def compute_farmscore(
     kharif_raw_values: Optional[Dict[str, Optional[float]]],
     rabi_raw_values: Optional[Dict[str, Optional[float]]],
     weights: Optional[Dict[str, float]] = None,
+    kharif_meta: Optional[Dict[str, Any]] = None,
+    rabi_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Top-level entry point — the ONE Bhumi AI FarmScore. Combines
-    Base + Kharif + Rabi into a single 400-1000 score. Never raises; a
-    completely missing input just yields "No data" sub-components and,
-    if EVERYTHING is missing, a default Poor-grade result rather than a
-    fabricated high score.
+    Base + Kharif + Rabi into a single 0-1000 score, read off the same
+    scale the grade bands are defined on. Never raises; if EVERYTHING is
+    missing it returns the bottom of the scale rather than a fabricated
+    high score.
     """
     base = compute_base_score(irrigation, cropping_intensity)
-    kharif = _compute_season_subscore(kharif_raw_values, weights, 400)
-    rabi = _compute_season_subscore(rabi_raw_values, weights, 400)
+    kharif = _compute_season_subscore(kharif_raw_values, weights, 400, kharif_meta)
+    rabi = _compute_season_subscore(rabi_raw_values, weights, 400, rabi_meta)
 
     components_available = [c for c in (base, kharif, rabi) if c.get("data_available")]
     if not components_available:
         return {
-            "final_score": 400,
+            "final_score": SCORE_MIN,
             "grade": DEFAULT_GRADE,
             "components": _merge_season_components(kharif["components"], rabi["components"]),
             "parameters_used": 0,
@@ -196,11 +268,18 @@ def compute_farmscore(
             },
         }
 
-    # Missing components are excluded (not scored as 0) — partial data
-    # still produces a usable, honestly-labeled result.
-    raw_total = sum(c["score"] for c in components_available)
-    max_possible = sum(c["max_score"] for c in components_available)
-    final_score = round(400 + (raw_total / max_possible) * 600) if max_possible else 400
+    # Kharif and Rabi are always present now — a season with no signal
+    # carries the no-data floor rather than dropping out — so the
+    # denominator stays at the full 1000 whenever Base is available, and
+    # the reported score IS the raw Base + Kharif + Rabi total.
+    scored = [c for c in (base, kharif, rabi) if c.get("score") is not None]
+    raw_total = sum(c["score"] for c in scored)
+    max_possible = sum(c["max_score"] for c in scored)
+
+    # Base is the only component that can still go missing entirely (no
+    # irrigation and no cropping-intensity signal). In that case project
+    # what was scored onto the full 1000 rather than adding a floor of 400.
+    final_score = round(raw_total / max_possible * SCORE_MAX) if max_possible else SCORE_MIN
     grade = assign_grade(final_score)
 
     merged_components = _merge_season_components(kharif["components"], rabi["components"])
@@ -212,7 +291,11 @@ def compute_farmscore(
         "components": merged_components,
         "parameters_used": parameters_used,
         "parameters_total": len(PARAMETER_LABELS),
-        "confidence": "high" if parameters_used >= 15 else "moderate" if parameters_used >= 10 else "low",
+        # An in-progress season is real data but not a finished result, so it
+        # caps confidence no matter how many parameters came back.
+        "confidence": ("low" if any(c.get("in_progress") for c in (kharif, rabi))
+                       else "high" if parameters_used >= 15
+                       else "moderate" if parameters_used >= 10 else "low"),
         "parameter_groups": PARAMETER_GROUPS,
         "validation_status": "provisional — Base+Kharif+Rabi weighting is a documented starting point, not empirically calibrated against ground-truth farm outcomes yet",
         "breakdown": {

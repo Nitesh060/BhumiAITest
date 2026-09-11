@@ -7,9 +7,11 @@ decision, there is now only ONE FarmScore: Base (0-200, irrigation +
 cropping intensity) + Average Kharif Score (0-400) + Average Rabi Score
 (0-400), each of the latter two computed with the same transparent
 20-parameter suitability formula scoped to that season's own values,
-rescaled to a 400-1000 final score with SatSure's exact 5-tier grade
-bands (Poor 400-625, Fair 626-725, Good 726-790, Very Good 791-870,
-Excellent 871-1000).
+summed to a 0-1000 final score with the reference report's exact 5-tier
+grade bands (Poor 0-625, Fair 626-725, Good 726-790, Very Good 791-870,
+Excellent 871-1000). The bands are read off the RAW total; an earlier
+version rescaled the total onto 400-1000 first and then applied these
+same bands, which lifted every farm by the 400-point floor.
 """
 import os
 import sys
@@ -59,31 +61,39 @@ class TestOnlyOneScoreExists:
 
 
 class TestFarmScoreRange:
-    def test_full_data_scores_within_400_1000(self):
+    def test_full_data_scores_within_0_1000(self):
         result = sss.compute_farmscore(IRRIGATED, TRIPLE_CROPPING, FULL_KHARIF_RAW, FULL_RABI_RAW)
-        assert 400 <= result["final_score"] <= 1000
+        assert 0 <= result["final_score"] <= 1000
 
-    def test_completely_missing_data_floors_at_400(self):
+    def test_completely_missing_data_floors_at_zero(self):
         result = sss.compute_farmscore(None, None, {}, {})
-        assert result["final_score"] == 400
+        assert result["final_score"] == 0
         assert result["grade"] == "Poor"
 
-    def test_partial_availability_still_scales_to_full_range(self):
-        """Losing the Rabi component shouldn't cap the score at some
-        fraction of 1000 — it should rescale against the max actually
-        achieved (Base 200 + Kharif 400 = 600), same philosophy as the
-        old Bhumi Seasonal Score's partial-data handling."""
+    def test_losing_a_season_must_lower_the_score(self):
+        """Regression: losing the Rabi leg used to drop it from BOTH the
+        numerator and the denominator, so a farm that grew nothing in Rabi
+        scored the same as one that grew a full second crop. A missing
+        season now takes the no-data floor and stays in the denominator."""
         full = sss.compute_farmscore(IRRIGATED, TRIPLE_CROPPING, FULL_KHARIF_RAW, FULL_RABI_RAW)
         no_rabi = sss.compute_farmscore(IRRIGATED, TRIPLE_CROPPING, FULL_KHARIF_RAW, {})
-        assert 400 <= no_rabi["final_score"] <= 1000
-        # Both are strong (irrigated, triple-cropped, healthy NDVI) — should
-        # land in a similar grade even with one seasonal leg missing.
-        assert abs(full["final_score"] - no_rabi["final_score"]) < 50
+        assert no_rabi["final_score"] < full["final_score"]
+        assert no_rabi["breakdown"]["rabi"]["score"] == 200
+        assert no_rabi["breakdown"]["rabi"]["data_available"] is False
+
+    def test_a_season_holding_one_stray_parameter_is_not_scored_as_perfect(self):
+        """Regression for the worst offender: app.py attached the annual
+        air temperature to every season, so a season with no data at all
+        arrived as {"air_temp": 28.5}. That single value normalised to ~100
+        and was booked as the whole season — a clean 400/400."""
+        phantom = sss.compute_farmscore(IRRIGATED, TRIPLE_CROPPING, FULL_KHARIF_RAW, {"air_temp": 28.5})
+        assert phantom["breakdown"]["rabi"]["score"] == 200
+        assert phantom["breakdown"]["rabi"]["scored_from"] == "no-data floor"
 
 
 class TestGradeBandsMatchReferenceReport:
     @pytest.mark.parametrize("score,expected", [
-        (400, "Poor"), (625, "Poor"), (626, "Fair"), (725, "Fair"),
+        (0, "Poor"), (400, "Poor"), (625, "Poor"), (626, "Fair"), (725, "Fair"),
         (726, "Good"), (790, "Good"), (791, "Very Good"), (870, "Very Good"),
         (871, "Excellent"), (1000, "Excellent"),
     ])
@@ -146,12 +156,20 @@ class TestCroppingIntensityLabelMatchesRealFetchFunction:
         assert breakdown["rabi"]["max_score"] == 400
         assert breakdown["base"]["max_score"] == 200
 
-    def test_raw_total_equals_base_plus_kharif_plus_rabi(self):
+    def test_final_score_is_the_raw_base_plus_kharif_plus_rabi_total(self):
+        """No rescale: the reported score IS Base + Kharif + Rabi."""
         result = sss.compute_farmscore(IRRIGATED, TRIPLE_CROPPING, FULL_KHARIF_RAW, FULL_RABI_RAW)
         b = result["breakdown"]
         raw_total = b["base"]["score"] + b["kharif"]["score"] + b["rabi"]["score"]
-        expected_final = round(400 + (raw_total / 1000) * 600)
-        assert result["final_score"] == expected_final
+        assert result["final_score"] == raw_total
+
+    def test_season_grade_is_read_off_the_same_0_1000_bands(self):
+        """237/400 projects to 592/1000 -> Poor. The old code computed
+        400 + 237/400*600 = 756 and called it "Good"."""
+        assert sss._grade_out_of(237, 400) == "Poor"
+        assert sss._grade_out_of(278, 400) == "Fair"
+        assert sss._grade_out_of(314, 400) == "Good"
+        assert sss._grade_out_of(335, 400) == "Very Good"
 
 
 class TestMergedComponentsBackwardCompatible:

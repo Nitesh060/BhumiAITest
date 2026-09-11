@@ -36,6 +36,7 @@ Loan ceiling formula (from the Bhumi doc, implemented literally):
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,8 @@ FALLBACK_PRICE_RS_PER_QUINTAL = {
     "Maize": 2090,
     "Groundnut": 6377,
 }
+
+DROUGHT_LOOKBACK_YEARS = 10
 
 RISK_LEVEL_TO_SCORE = {"Low": 10, "Moderate": 50, "High": 90}
 
@@ -100,9 +103,11 @@ def compute_bcis_score(farmscore: Optional[int], climate_risk_level: Optional[st
     drivers = []
     components = {}
 
-    # FarmScore inverted: 400-1000 scale -> 0-100 risk (higher FarmScore = lower risk)
+    # FarmScore inverted: 0-1000 scale -> 0-100 risk (higher FarmScore = lower risk).
+    # Was dividing by (1000-400), which assumed a floor the score no longer has
+    # and so understated risk for every farm below 400.
     if farmscore is not None:
-        farmscore_risk = round((1000 - farmscore) / (1000 - 400) * 100)
+        farmscore_risk = round((1000 - farmscore) / 1000 * 100)
         farmscore_risk = max(0, min(100, farmscore_risk))
     else:
         farmscore_risk = 50  # neutral if unknown
@@ -119,7 +124,11 @@ def compute_bcis_score(farmscore: Optional[int], climate_risk_level: Optional[st
     if flood_risk_level in ("Moderate", "High"):
         drivers.append(f"Flood risk: {flood_risk_level}")
 
-    recent_drought_count = len([y for y in (drought_years or []) if y >= 2016])  # last ~10 years
+    # Rolling ten-year window. This was `y >= 2016` with a "last ~10 years"
+    # comment — correct only in 2026, and silently widening by a year every
+    # year after that until a farm's whole drought history counts as "recent".
+    cutoff_year = date.today().year - DROUGHT_LOOKBACK_YEARS
+    recent_drought_count = len([y for y in (drought_years or []) if y >= cutoff_year])
     drought_score = min(100, recent_drought_count * 25)
     components["drought_history"] = drought_score
     if recent_drought_count >= 2:

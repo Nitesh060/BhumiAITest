@@ -59,19 +59,63 @@ EXPENSIVE_PATHS = {
     "/calculate", "/comprehensive-score", "/diagnose", "/spectral", "/spectral-indices", "/sar-moisture",
     "/historical-timeline", "/before-after", "/vegetation-heatmap", "/ndvi-heatmap", "/crop-intelligence",
     "/farm-advisor", "/risk-analysis",
+    # GET endpoints that also cost real money on every call. /alphaearth is
+    # registered from this file (register_alphaearth_routes) and runs Earth
+    # Engine; /mandi-price and /major-crops call data.gov.in on a metered
+    # key. All three are unauthenticated, and the limiter used to skip every
+    # GET outright, so they could be hammered without limit.
+    "/alphaearth", "/mandi-price", "/major-crops",
 }
+RATE_LIMITED_METHODS = {"POST", "GET"}
+# Number of trusted reverse proxies in front of this app. On a managed host
+# (Render, Heroku, most load balancers) every request arrives with the
+# proxy's own address in REMOTE_ADDR, so keying the rate limiter on
+# REMOTE_ADDR alone puts EVERY user in one shared bucket: the 21st request
+# per minute from the whole internet is refused, whoever sent it, while a
+# single abusive client is never isolated.
+#
+# The fix is to read the client address out of X-Forwarded-For — but that
+# header is attacker-controlled, so a client could otherwise mint a fresh
+# identity per request and bypass the limit entirely. Counting hops from the
+# RIGHT is what makes it safe: each trusted proxy appends the address it saw,
+# so the Nth-from-last entry is the one the outermost trusted proxy observed
+# and a client cannot forge past it.
+#
+# Default 0 preserves the previous behaviour. Set TRUSTED_PROXY_HOPS=1 when
+# deploying behind a single proxy (this repo's Render setup).
+TRUSTED_PROXY_HOPS = int(os.getenv("TRUSTED_PROXY_HOPS", "0"))
+
+# Stale buckets were never removed, so the dict grew one entry per distinct
+# ip:path forever — unbounded memory on a long-running process.
+MAX_TRACKED_CLIENTS = int(os.getenv("MAX_TRACKED_CLIENTS", "10000"))
+
 _hits: dict[str, deque[float]] = defaultdict(deque)
 
 
 def _client_ip(environ):
+    if TRUSTED_PROXY_HOPS > 0:
+        forwarded = environ.get("HTTP_X_FORWARDED_FOR", "")
+        chain = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if len(chain) >= TRUSTED_PROXY_HOPS:
+            return chain[-TRUSTED_PROXY_HOPS]
     return environ.get("REMOTE_ADDR", "unknown")
+
+
+def _prune(now):
+    """Drop buckets with no hits inside the current window."""
+    cutoff = now - RATE_WINDOW_SECONDS
+    for key in [k for k, b in _hits.items() if not b or b[-1] < cutoff]:
+        del _hits[key]
 
 
 def _rate_limited(environ):
     path = environ.get("PATH_INFO", "")
-    if path not in EXPENSIVE_PATHS or environ.get("REQUEST_METHOD") != "POST":
+    if path not in EXPENSIVE_PATHS or environ.get("REQUEST_METHOD") not in RATE_LIMITED_METHODS:
         return False
-    now = time.time(); key = f"{_client_ip(environ)}:{path}"; bucket = _hits[key]; cutoff = now - RATE_WINDOW_SECONDS
+    now = time.time()
+    if len(_hits) > MAX_TRACKED_CLIENTS:
+        _prune(now)
+    key = f"{_client_ip(environ)}:{path}"; bucket = _hits[key]; cutoff = now - RATE_WINDOW_SECONDS
     while bucket and bucket[0] < cutoff:
         bucket.popleft()
     if len(bucket) >= RATE_LIMIT:

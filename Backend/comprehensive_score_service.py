@@ -26,7 +26,7 @@ PARAMETER_GROUPS = {
 }
 
 DEFAULT_GRADE = "Poor"
-# 400-1000 scale, 5-tier bands — matches the reference SatSource-style
+# 0-1000 scale, 5-tier bands — matches the reference SatSource-style
 # report's exact category/interval mapping (Poor 400-625, Fair 626-725,
 # Good 726-790, Very Good 791-870, Excellent 871-1000), not an
 # independently-chosen scheme. Shared with seasonal_score_service.py's
@@ -56,37 +56,95 @@ PARAMETER_LABELS = {
 def _clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, v))
 
+
+# Score awarded at the two edges of a parameter's ideal band. Inside the
+# band the score rises from this value to 100 at the band's centre, so only
+# a genuinely optimal reading earns full marks.
+#
+# The previous curve returned a flat 100.0 anywhere inside the ideal band.
+# Because those bands were also wide, an ordinary healthy Kharif paddy farm
+# saturated 17 of the 20 parameters at exactly 100 and scored 99/100 — the
+# index could not tell an average farm from an outstanding one.
+PLATEAU_EDGE = 80.0
+
+
 def _range_score(v: float, low: float, ideal_low: float, ideal_high: float, high: float) -> float:
+    """Peaked suitability curve.
+
+      0 at or beyond `low` / `high`
+      ramping up to PLATEAU_EDGE at the ideal-band edges
+      peaking at 100 in the centre of the ideal band
+    """
     if v <= low or v >= high:
         return 0.0
-    if ideal_low <= v <= ideal_high:
-        return 100.0
     if v < ideal_low:
-        return _clamp((v - low) / (ideal_low - low) * 100.0)
-    return _clamp((high - v) / (high - ideal_high) * 100.0)
+        return _clamp((v - low) / (ideal_low - low) * PLATEAU_EDGE)
+    if v > ideal_high:
+        return _clamp((high - v) / (high - ideal_high) * PLATEAU_EDGE)
 
-def _norm_ndvi(v): return None if v is None else _range_score(v, 0.10, 0.45, 0.80, 0.95)
-def _norm_evi(v): return None if v is None else _range_score(v, 0.02, 0.25, 0.55, 0.75)
-def _norm_savi(v): return None if v is None else _range_score(v, 0.02, 0.25, 0.60, 0.85)
-def _norm_msavi(v): return None if v is None else _range_score(v, 0.02, 0.35, 0.75, 0.95)
-def _norm_ndre(v): return None if v is None else _range_score(v, 0.02, 0.15, 0.35, 0.50)
-def _norm_ndmi(v): return None if v is None else _range_score(v, -0.60, 0.10, 0.50, 0.80)
-def _norm_ndwi(v): return None if v is None else _range_score(v, -0.60, -0.30, 0.15, 0.70)
-def _norm_ci_green(v): return None if v is None else _range_score(v, 0.0, 1.0, 4.0, 8.0)
-def _norm_ci_rededge(v): return None if v is None else _range_score(v, 0.0, 0.7, 2.5, 5.0)
-def _norm_vv(v): return None if v is None else _range_score(v, -30.0, -18.0, -7.0, 0.0)
-def _norm_vh(v): return None if v is None else _range_score(v, -35.0, -23.0, -8.0, 0.0)
-def _norm_vh_vv(v): return None if v is None else _range_score(v, 0.02, 0.10, 0.35, 0.70)
-def _norm_rvi(v): return None if v is None else _range_score(v, 0.0, 0.20, 0.70, 1.50)
-def _norm_rainfall(v): return None if v is None else _range_score(v, 0.0, 2.0, 6.0, 15.0)
-def _norm_air_temp(v): return None if v is None else _range_score(v, 5.0, 18.0, 32.0, 45.0)
-def _norm_solar(v): return None if v is None else _range_score(v, 4.0, 12.0, 24.0, 35.0)
-def _norm_spi(v): return None if v is None else _clamp(100.0 - abs(v) * 20.0)
-def _norm_spei(v): return None if v is None else _clamp(100.0 - abs(v) * 20.0)
-def _norm_gdd(v): return None if v is None else _range_score(v, 200.0, 900.0, 2200.0, 3500.0)
-def _norm_lst(v): return None if v is None else _range_score(v, 5.0, 18.0, 32.0, 45.0)
+    half_width = (ideal_high - ideal_low) / 2.0
+    if half_width <= 0:
+        return 100.0
+    midpoint = (ideal_low + ideal_high) / 2.0
+    offset = abs(v - midpoint) / half_width          # 0 at centre, 1 at edge
+    return _clamp(100.0 - (100.0 - PLATEAU_EDGE) * offset ** 2)
 
-_NORMALIZERS = {"ndvi":_norm_ndvi,"evi":_norm_evi,"savi":_norm_savi,"msavi":_norm_msavi,"ndre":_norm_ndre,"ndmi":_norm_ndmi,"ndwi":_norm_ndwi,"ci_green":_norm_ci_green,"ci_rededge":_norm_ci_rededge,"vv":_norm_vv,"vh":_norm_vh,"vh_vv":_norm_vh_vv,"rvi":_norm_rvi,"rainfall":_norm_rainfall,"air_temp":_norm_air_temp,"solar_radiation":_norm_solar,"spi":_norm_spi,"spei":_norm_spei,"gdd":_norm_gdd,"lst":_norm_lst}
+
+# ---------------------------------------------------------------------------
+# CALIBRATION TABLE — (low, ideal_low, ideal_high, high) per parameter.
+#
+# These are agronomic optima for irrigated/rainfed cereal systems, NOT values
+# fitted to any reference report. They are the one place to tune the model:
+# widen a band and that parameter becomes more forgiving, narrow it and it
+# becomes stricter. `tools/calibrate_thresholds.py` fits them against a
+# ground-truth sample.
+#
+# The previous bands were centred on merely-adequate readings (e.g. NDVI
+# 0.45-0.80 scored full marks, when 0.45 is a thin canopy) which is what let
+# an average farm reach the Excellent grade.
+# ---------------------------------------------------------------------------
+THRESHOLDS = {
+    "ndvi":            (0.10,   0.70,   0.85,   0.95),
+    "evi":             (0.05,   0.45,   0.65,   0.85),
+    "savi":            (0.05,   0.50,   0.70,   0.90),
+    "msavi":           (0.05,   0.60,   0.80,   0.95),
+    "ndre":            (0.05,   0.30,   0.45,   0.60),
+    "ndmi":            (-0.30,  0.30,   0.50,   0.75),
+    "ndwi":            (-0.50, -0.10,   0.20,   0.60),
+    "ci_green":        (0.50,   4.00,   6.00,   9.00),
+    "ci_rededge":      (0.30,   2.00,   3.50,   5.50),
+    "vv":              (-25.0, -9.00,  -6.00,  -2.00),
+    "vh":              (-30.0, -15.0,  -11.0,  -5.00),
+    "vh_vv":           (0.05,   0.28,   0.45,   0.70),
+    "rvi":             (0.10,   0.70,   1.10,   1.60),
+    "rainfall":        (0.50,   4.00,   8.00,   16.0),
+    "air_temp":        (8.00,   24.0,   30.0,   42.0),
+    "solar_radiation": (6.00,   18.0,   24.0,   32.0),
+    "gdd":             (400.0,  1600.0, 2600.0, 3600.0),
+    "lst":             (8.00,   24.0,   30.0,   45.0),
+}
+
+# SPI/SPEI are anomalies: 0 is normal, and departure in EITHER direction is
+# bad. The penalty per unit of |anomaly| was 20, so even a severe SPI of -2.0
+# still scored 60/100. At 35 a moderate drought (-1.0) scores 65 and a severe
+# one (-2.0) scores 30.
+ANOMALY_PENALTY_PER_UNIT = 35.0
+
+
+def _make_range_normalizer(key):
+    low, ideal_low, ideal_high, high = THRESHOLDS[key]
+    def _norm(v):
+        return None if v is None else _range_score(v, low, ideal_low, ideal_high, high)
+    return _norm
+
+
+def _norm_anomaly(v):
+    return None if v is None else _clamp(100.0 - abs(v) * ANOMALY_PENALTY_PER_UNIT)
+
+
+_NORMALIZERS = {key: _make_range_normalizer(key) for key in THRESHOLDS}
+_NORMALIZERS["spi"] = _norm_anomaly
+_NORMALIZERS["spei"] = _norm_anomaly
 
 def compute_comprehensive_score(raw_values: Dict[str, Optional[float]], weights: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     # Make a copy so DEFAULT_WEIGHTS is never modified globally.
@@ -135,11 +193,18 @@ def compute_comprehensive_score(raw_values: Dict[str, Optional[float]], weights:
             c["contribution"] = round(effective_weight * c["sub_score"], 2)
             weighted_sum += effective_weight * c["sub_score"]
     score = round(weighted_sum, 2)
-    scaled = round(400 + (score / 100) * 600)
+    # GRADE_BANDS are defined on the 0-1000 scale, so grade there. The old
+    # code graded `400 + score/100*600`, which lifted every farm by the
+    # 400-point floor and compressed the rest into the top two bands: a
+    # mediocre 55/100 became 730 and was labelled "Good".
+    scaled = round(score / 100 * 1000)
     used = sum(1 for c in components.values() if c["sub_score"] is not None)
     confidence = "high" if used >= 15 else "moderate" if used >= 10 else "low"
     return {
-        "score_0_100": score, "score_400_1000": scaled, "grade": assign_grade(scaled),
+        "score_0_100": score, "score_0_1000": scaled,
+        # Legacy alias — same value, kept so older callers keep working.
+        "score_400_1000": scaled,
+        "grade": assign_grade(scaled),
         "confidence": confidence, "components": components, "parameters_used": used,
         "parameters_total": len(_NORMALIZERS), "parameter_groups": PARAMETER_GROUPS,
         "validation_status": "provisional — correlated parameter groups are explicitly tracked; empirical correlation/PCA calibration against ground-truth farms is still required",

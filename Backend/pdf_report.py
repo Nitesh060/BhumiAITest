@@ -86,9 +86,9 @@ def _p(value: Any, style):
 
 def _score(value: Any) -> int:
     try:
-        return max(400, min(1000, int(float(value))))
+        return max(0, min(1000, int(float(value))))
     except Exception:
-        return 400
+        return 0
 
 
 def _ref_id(data: Dict[str, Any]) -> str:
@@ -297,8 +297,8 @@ def _score_breakdown_section(breakdown: Optional[Dict[str, Any]], s) -> list:
     ]
     story += [_table(factor_rows, [45 * mm, 55 * mm, 74 * mm], s), Spacer(1, 4)]
     story.append(Paragraph(
-        "The Bhumi AI FarmScore above is this Base + Average Kharif Score + Average Rabi Score composite, rescaled to "
-        "a 400-1000 final score. Base comes from irrigation + cropping intensity; Kharif/Rabi each run the same "
+        "The Bhumi AI FarmScore above is this Base + Average Kharif Score + Average Rabi Score composite, summed to "
+        "a 0-1000 final score. Base comes from irrigation + cropping intensity; Kharif/Rabi each run the same "
         "transparent 20-parameter suitability formula (see \"FarmScore & Parameter Evidence\" above) scoped to that "
         "season's own satellite/weather data. It is a formula-based proxy, NOT validated against real harvested-yield "
         "ground truth.",
@@ -331,7 +331,7 @@ def _score_page(data, s):
 
     summary = [
         [score_bar, Paragraph(f"<b>{score}/1000</b><br/><font color='{risk_color.hexval()}'>{_esc(grade)} - {_esc(risk)}</font>", s["Body8"])],
-        [Paragraph("Bhumi AI suitability / condition index", s["Small"]), Paragraph("400-1000 scale", s["Small"])],
+        [Paragraph("Bhumi AI suitability / condition index", s["Small"]), Paragraph("0-1000 scale", s["Small"])],
     ]
     st = Table(summary, colWidths=[100 * mm, 74 * mm])
     st.setStyle(TableStyle([
@@ -347,23 +347,34 @@ def _score_page(data, s):
     story += _section("Farm Details", s)
     irr = enrichment.get("irrigation") or {}
     ci = enrichment.get("cropping_intensity") or {}
+    # The report used to print "Location from selected coordinates" and a
+    # blank Survey No. regardless of what was actually known. The reverse-
+    # geocoded fields and the measured farm area are on the payload now.
+    loc = data.get("location") or {}
+    rec = data.get("land_record") or {}
+    land_use = (enrichment.get("adjacent_land_cover") or {}).get("farm_land_use")
+    region_label = ", ".join(
+        v for v in (loc.get("village"), loc.get("tehsil"), loc.get("district"), loc.get("state")) if v
+    ) or "Location from selected coordinates"
+    area_ha = loc.get("farm_area_ha")
     soil = enrichment.get("soil_type") or {}
     details = [
-        ["S.NO.", "REGION / LOCATION", "SURVEY NO.", "IRRIGATION", "CROPPING INTENSITY", "FARM CENTROID", "LAND USE"],
+        ["S.NO.", "REGION / LOCATION", "SURVEY NO.", "AREA (HA)", "IRRIGATION", "CROPPING INTENSITY", "LAND USE"],
         [
             "1",
-            "Location from selected coordinates",
-            "Not available",
+            _esc(region_label),
+            _esc(rec.get("survey_no") or "Not available"),
+            f"{area_ha:.2f}" if area_ha else "Not available",
             "Irrigated" if irr.get("likely_irrigated") else ("Rainfed" if irr.get("likely_irrigated") is False else "Not available"),
-            ci.get("label") or "Not available",
-            f"{coords.get('lat', '—')} N / {coords.get('lng', '—')} E",
-            "Agricultural",
+            _esc(ci.get("label") or "Not available"),
+            _esc(land_use or "Not available"),
         ],
     ]
     # IMPORTANT: total is exactly 174 mm. The previous implementation used
     # 184 mm here, wider than the A4 frame, which can raise ReportLab
     # LayoutError and produced the HTTP 500 seen by the frontend.
-    story += [_table(details, [9 * mm, 38 * mm, 25 * mm, 26 * mm, 28 * mm, 28 * mm, 20 * mm], s), Spacer(1, 7)]
+    # Column widths must still total exactly 174 mm — see the note above.
+    story += [_table(details, [9 * mm, 44 * mm, 22 * mm, 17 * mm, 24 * mm, 28 * mm, 30 * mm], s), Spacer(1, 7)]
 
     story += _score_breakdown_section(enrichment.get("farmscore_breakdown"), s)
 
@@ -446,12 +457,27 @@ def _location_page(data, s):
     elif thumb.get("reason"):
         story += [Paragraph(f"Satellite image unavailable: {_esc(thumb['reason'])}", s["Small"]), Spacer(1, 6)]
 
+    loc = data.get("location") or {}
+    rec = data.get("land_record") or {}
+    region_label = ", ".join(
+        v for v in (loc.get("village"), loc.get("tehsil"), loc.get("district"), loc.get("state")) if v
+    ) or "Not available"
+    survey = ", ".join(
+        f"{k} {v}" for k, v in (("Survey", rec.get("survey_no")), ("Plot", rec.get("plot_no")),
+                                ("Khatiyan", rec.get("khatiyan_no"))) if v
+    ) or "Not available"
+    area_ha = loc.get("farm_area_ha")
+    # "Land Use Type" was hardcoded to "Agricultural" for every farm; it is
+    # now the ESA WorldCover class measured over the farm polygon itself.
+    land_use = (e.get("adjacent_land_cover") or {}).get("farm_land_use") or "Not available"
+
     rows = [
         ["ITEM", "VALUE"],
-        ["Farm Centroid", f"{coords.get('lat', '—')} N, {coords.get('lng', '—')} E"],
-        ["Farm Label", "Selected farm / location"],
-        ["Survey Details", "Not available"],
-        ["Land Use Type", "Agricultural"],
+        ["Farm Centroid", loc.get("centroid") or f"{coords.get('lat', '—')} N, {coords.get('lng', '—')} E"],
+        ["Region", _esc(region_label)],
+        ["Farm Area", f"{area_ha:.2f} ha" if area_ha else "No boundary drawn"],
+        ["Survey Details", _esc(survey)],
+        ["Land Use Type", _esc(land_use)],
     ]
     story += [_table(rows, [55 * mm, 119 * mm], s), Spacer(1, 7)]
 

@@ -109,7 +109,7 @@ def _format_score_summary(result: Dict[str, Any]) -> str:
     confidence = result.get("score_confidence") or result.get("confidence")
     coords = result.get("coordinates", {})
     components = result.get("components", {})
-    crops = result.get("recommended_crops") or []
+    crops = result.get("recommended_crops") or {}
     climate = result.get("climate_risk", {})
     lines = [f"🌱 *Bhumi AI Score: {score}/1000 — {grade}*"]
     if confidence:

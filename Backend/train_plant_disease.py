@@ -47,7 +47,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
@@ -76,6 +78,24 @@ _VAL_TRANSFORM = transforms.Compose([
 ])
 
 
+
+def _seed_everything(seed: int) -> None:
+    """Make a training run reproducible.
+
+    Neither training script seeded anything, so `random_split` carved a
+    DIFFERENT train/validation split on every run, and weight init and
+    augmentation varied too. Two runs of identical code produced different
+    val_acc, which makes it impossible to tell whether a change helped or the
+    split was just kinder — and the checkpoint that gets shipped cannot be
+    reproduced. `generate_synthetic_dataset.py` in this same directory
+    already took a --seed; the trainers did not.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="Path to the dataset's 'color' folder (one subfolder per class)")
@@ -83,10 +103,13 @@ def main() -> None:
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--val-split", type=float, default=0.15)
+    ap.add_argument("--seed", type=int, default=42,
+                     help="Seed for the train/val split, weight init and augmentation.")
     ap.add_argument("--freeze-backbone", action="store_true",
                      help="Only train the new classifier head (faster, lower accuracy ceiling). "
                           "Default fine-tunes the whole network.")
     args = ap.parse_args()
+    _seed_everything(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -97,7 +120,12 @@ def main() -> None:
 
     n_val = max(1, int(len(full_ds) * args.val_split))
     n_train = len(full_ds) - n_val
-    train_ds, val_ds = random_split(full_ds, [n_train, n_val])
+    # Explicit generator so the split is tied to --seed rather than to
+    # global RNG state that a later import could disturb.
+    train_ds, val_ds = random_split(
+        full_ds, [n_train, n_val],
+        generator=torch.Generator().manual_seed(args.seed),
+    )
     # random_split shares the parent dataset's transform; validation
     # should use the un-augmented one to measure real generalization.
     val_ds.dataset = ImageFolder(args.data, transform=_VAL_TRANSFORM)

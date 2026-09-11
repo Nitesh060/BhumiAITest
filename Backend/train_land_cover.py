@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import random
 
 import numpy as np
 import torch
@@ -66,6 +67,24 @@ class PatchDataset(Dataset):
         return tensor, label
 
 
+
+def _seed_everything(seed: int) -> None:
+    """Make a training run reproducible.
+
+    Neither training script seeded anything, so `random_split` carved a
+    DIFFERENT train/validation split on every run, and weight init and
+    augmentation varied too. Two runs of identical code produced different
+    val_acc, which makes it impossible to tell whether a change helped or the
+    split was just kinder — and the checkpoint that gets shipped cannot be
+    reproduced. `generate_synthetic_dataset.py` in this same directory
+    already took a --seed; the trainers did not.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="Path to labelled patch folder")
@@ -73,12 +92,18 @@ def main() -> None:
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--val-split", type=float, default=0.15)
+    ap.add_argument("--seed", type=int, default=42,
+                     help="Seed for the train/val split and weight init.")
     args = ap.parse_args()
+    _seed_everything(args.seed)
 
     ds = PatchDataset(args.data)
     n_val = max(1, int(len(ds) * args.val_split))
     n_train = len(ds) - n_val
-    train_ds, val_ds = torch.utils.data.random_split(ds, [n_train, n_val])
+    train_ds, val_ds = torch.utils.data.random_split(
+        ds, [n_train, n_val],
+        generator=torch.Generator().manual_seed(args.seed),
+    )
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size)

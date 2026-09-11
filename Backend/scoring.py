@@ -70,7 +70,7 @@ def calculate_score(raw_values: Dict[str, Optional[float]], weights: Optional[Di
     if comp_result.get("score_0_100") is None:
         logger.warning("calculate_score: no usable parameters")
         return {
-            "final_score": 400,
+            "final_score": 0,
             "grade": DEFAULT_GRADE,
             "components": {},
             "parameters_used": 0,
@@ -79,7 +79,7 @@ def calculate_score(raw_values: Dict[str, Optional[float]], weights: Optional[Di
         }
 
     return {
-        "final_score": comp_result["score_400_1000"],
+        "final_score": comp_result["score_0_1000"],
         "grade": comp_result["grade"],
         "components": adapt_components(comp_result),
         "parameters_used": comp_result["parameters_used"],

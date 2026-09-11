@@ -42,8 +42,40 @@ if DATABASE_URL:
     # accept this argument at all.
     is_postgres = DATABASE_URL.startswith("postgres")
     connect_args = {"sslmode": "require"} if (is_postgres and "sslmode" not in DATABASE_URL) else {}
+    if is_postgres:
+        # Neon suspends compute when idle and resumes on the next connection,
+        # so a pooled connection that has been sitting open is often already
+        # dead. pool_pre_ping catches that. The rest matters now that
+        # /calculate does a parcel lookup on every request:
+        #
+        #  * pool_recycle — Neon drops idle connections server-side; a
+        #    connection older than this is discarded rather than handed out
+        #    and found broken.
+        #  * small pool — Neon's connection ceiling is low compared to
+        #    self-hosted Postgres, and gunicorn multiplies whatever is set
+        #    here by the worker count. Use Neon's POOLED connection string
+        #    (the host with `-pooler` in it) as well; the direct host will
+        #    exhaust connections under load.
+        connect_args.setdefault("connect_timeout", 10)
+        engine_kwargs = {
+            "pool_pre_ping": True,
+            "pool_recycle": int(os.getenv("DB_POOL_RECYCLE", "300")),
+            "pool_size": int(os.getenv("DB_POOL_SIZE", "5")),
+            "max_overflow": int(os.getenv("DB_MAX_OVERFLOW", "2")),
+            "pool_timeout": int(os.getenv("DB_POOL_TIMEOUT", "30")),
+        }
+        if "-pooler." not in DATABASE_URL:
+            logger.warning(
+                "DATABASE_URL does not look like Neon's pooled endpoint "
+                "(no '-pooler.' in the host). Under gunicorn with several "
+                "workers the direct endpoint can exhaust Neon's connection "
+                "limit — prefer the pooled connection string."
+            )
+    else:
+        engine_kwargs = {"pool_pre_ping": True}
+
     try:
-        _engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
+        _engine = create_engine(DATABASE_URL, connect_args=connect_args, **engine_kwargs)
         _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
     except Exception:
         logger.exception("Failed to create database engine — Farm Management features will be unavailable")

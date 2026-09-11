@@ -246,7 +246,7 @@ def _format_farm_context(farm_context: Optional[Dict[str, Any]]) -> str:
         f"(sub-score {v.get('sub_score')}/100, weight {v.get('weight')}%, source {v.get('source')})"
         for k, v in components.items() if v
     )
-    crop = (farm_context.get("recommended_crops") or {}).get("primary", {})
+    crop = (farm_context.get("recommended_crops") or {}).get("primary") or {}
     climate = farm_context.get("climate_risk") or {}
 
     return f"""FarmScore: {farm_context.get('score')}/1000 ({farm_context.get('grade')})

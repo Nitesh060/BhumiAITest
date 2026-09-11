@@ -143,3 +143,45 @@ class TestFetchSeasonalComprehensiveData:
         sds.fetch_seasonal_comprehensive_data(12.0, 77.0, None)
         assert all(r is plain_region for r in optical_regions)
         assert all(r is plain_region for r in sar_regions)
+
+
+class TestSeasonWindowsAreBounded:
+    """Regression tests for `latest_season_windows()`.
+
+    Two window bugs shipped together: the Kharif fallback branch built its
+    end date from the CURRENT year while starting from the PREVIOUS year, and
+    the Rabi branch never clamped its end to today.
+    """
+
+    def test_kharif_window_never_spans_more_than_one_season(self):
+        from datetime import date
+        from seasonal_data_service import latest_season_windows
+        for day in (date(2026, 1, 20), date(2026, 3, 15), date(2026, 5, 31)):
+            window = latest_season_windows(day)["kharif"]
+            start = date.fromisoformat(window["start"])
+            end = date.fromisoformat(window["end"])
+            # 1 Jun -> 1 Nov is 153 days. `date(y, 11, 1)` instead of
+            # `date(k_year, 11, 1)` made this 518 days, averaging two Kharif
+            # seasons and the Rabi between them into one "season".
+            assert (end - start).days <= 160, f"{day}: {start} -> {end}"
+
+    def test_no_window_extends_into_the_future(self):
+        from datetime import date, timedelta
+        from seasonal_data_service import latest_season_windows
+        for day in (date(2026, 3, 15), date(2026, 9, 9), date(2026, 12, 15), date(2027, 1, 20)):
+            for season, window in latest_season_windows(day).items():
+                end = date.fromisoformat(window["end"])
+                assert end <= day + timedelta(days=1), f"{day}: {season} ends {end}"
+
+    def test_a_just_started_rabi_is_not_reported_as_complete(self):
+        from datetime import date
+        from seasonal_data_service import latest_season_windows
+        # Six weeks into Rabi 2026-27.
+        window = latest_season_windows(date(2026, 12, 15))["rabi"]
+        assert window["complete"] is False
+
+    def test_a_finished_season_is_reported_as_complete(self):
+        from datetime import date
+        from seasonal_data_service import latest_season_windows
+        assert latest_season_windows(date(2026, 9, 9))["rabi"]["complete"] is True
+        assert latest_season_windows(date(2026, 12, 15))["kharif"]["complete"] is True

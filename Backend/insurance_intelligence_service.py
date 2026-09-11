@@ -35,8 +35,18 @@ def verify_acreage(declared_area_ha: Optional[float], measured_area_ha: Optional
     if declared_area_ha is None or measured_area_ha is None:
         return {"available": False, "reason": "Both declared and satellite-measured area are needed."}
 
-    discrepancy_pct = round(abs(declared_area_ha - measured_area_ha) / declared_area_ha * 100, 1) if declared_area_ha > 0 else None
-    match = discrepancy_pct is not None and discrepancy_pct <= tolerance_pct
+    # A declared area of zero or less is bad input, not a finding. It used to
+    # fall through with discrepancy_pct=None, which made `match` False, which
+    # made detect_fraud_signals add 35 points and record
+    # "Acreage Under-declared (None% discrepancy)" — a data-entry slip
+    # turning into a fraud flag against the claimant.
+    if declared_area_ha <= 0:
+        return {"available": False, "reason": f"Declared area must be greater than zero (got {declared_area_ha})."}
+    if measured_area_ha < 0:
+        return {"available": False, "reason": f"Measured area is invalid (got {measured_area_ha})."}
+
+    discrepancy_pct = round(abs(declared_area_ha - measured_area_ha) / declared_area_ha * 100, 1)
+    match = discrepancy_pct <= tolerance_pct
     over_declared = declared_area_ha > measured_area_ha
 
     return {

@@ -64,6 +64,8 @@ from glossary import GLOSSARY_TERMS
 from pdf_report import generate_pdf_report
 import whatsapp_service
 from yield_prediction import estimate_yield, compute_polygon_area_ha
+from location_service import fetch_location, fetch_land_record
+from parcel_service import find_parcel
 import db as db_module
 import farm_management_service as fms
 import auth_service
@@ -81,6 +83,12 @@ from crop_intelligence_service import (
     CROP_CALENDAR,
 )
 from seasonal_score_service import compute_farmscore as compute_farmscore_from_seasons
+from comprehensive_score_service import PARAMETER_LABELS as _PARAMETER_LABELS
+
+# The 20 keys the score actually reads. Used to separate real measurements
+# from the window metadata that fetch_seasonal_comprehensive_data mixes into
+# the same per-season dict.
+SCORING_PARAMETERS = frozenset(_PARAMETER_LABELS)
 from enrichment_service import fetch_cropping_intensity as _fetch_cropping_intensity_for_ci
 from enrichment_service import fetch_cropping_history as _fetch_cropping_history_for_ci
 from weather_soil_terrain_service import (
@@ -260,9 +268,18 @@ def _verify_score_signature(body: dict) -> bool:
 # function here at all, so there is no dead code standing in for a
 # decision that was never really made on purpose.
 from collections import OrderedDict as _OrderedDict
+import threading as _threading
 
 _season_cache: "_OrderedDict" = _OrderedDict()
 _SEASON_CACHE_MAX = 50
+# Guards `_season_cache` itself. Held only for dict operations, never across
+# the Earth Engine fetch — otherwise one slow farm would block every other
+# request in the process.
+_season_cache_lock = _threading.Lock()
+# One lock per in-flight key, so concurrent requests for the SAME farm wait
+# for the first fetch instead of each launching their own.
+_season_inflight: dict = {}
+_season_inflight_lock = _threading.Lock()
 _original_fetch_farm_data = fetch_farm_data
 
 
@@ -271,14 +288,55 @@ def _season_key(lat, lng, polygon):
 
 
 def _get_seasonal(lat, lng, polygon=None):
+    """Cached seasonal fetch, safe under Flask's threaded workers.
+
+    The previous version touched a bare OrderedDict from multiple threads
+    with no lock, which cost real money and could crash:
+
+      * Cache stampede. `if key not in cache: cache[key] = fetch(...)` is not
+        atomic, so N concurrent requests for one farm all missed and all ran
+        the Earth Engine fetch. Measured at 8 EE calls for 8 simultaneous
+        requests to the same coordinates, where one would do.
+
+      * KeyError on eviction. Between `key not in cache` returning False and
+        the following `move_to_end(key)` / `cache[key]`, another thread's
+        insert could evict that very key via `popitem(last=False)` — the
+        request then died with a bare KeyError.
+    """
     key = _season_key(lat, lng, polygon)
-    if key not in _season_cache:
-        _season_cache[key] = fetch_seasonal_comprehensive_data(lat, lng, polygon)
-        if len(_season_cache) > _SEASON_CACHE_MAX:
-            _season_cache.popitem(last=False)  # evict oldest entry
-    else:
-        _season_cache.move_to_end(key)  # keep recently-used entries alive longest
-    return _season_cache[key]
+
+    with _season_cache_lock:
+        if key in _season_cache:
+            _season_cache.move_to_end(key)
+            return _season_cache[key]
+
+    # Miss. Take a per-key lock so only the first caller fetches.
+    with _season_inflight_lock:
+        key_lock = _season_inflight.get(key)
+        if key_lock is None:
+            key_lock = _season_inflight[key] = _threading.Lock()
+
+    with key_lock:
+        # Another thread may have populated the entry while we queued.
+        with _season_cache_lock:
+            if key in _season_cache:
+                _season_cache.move_to_end(key)
+                return _season_cache[key]
+
+        value = fetch_seasonal_comprehensive_data(lat, lng, polygon)
+
+        with _season_cache_lock:
+            _season_cache[key] = value
+            _season_cache.move_to_end(key)
+            while len(_season_cache) > _SEASON_CACHE_MAX:
+                _season_cache.popitem(last=False)
+
+    with _season_inflight_lock:
+        # Only clear the lock we created; a later miss may have replaced it.
+        if _season_inflight.get(key) is key_lock:
+            _season_inflight.pop(key, None)
+
+    return value
 
 
 def _seasonal_farm_data(lat, lng, polygon=None):
@@ -399,7 +457,7 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
     Raises on hard failures (satellite fetch / scoring); callers decide
     how to surface that (HTTP error vs a WhatsApp text reply).
 
-    FarmScore (final_score, 400-1000) is Base + Average Kharif Score +
+    FarmScore (final_score, 0-1000) is Base + Average Kharif Score +
     Average Rabi Score — see seasonal_score_service.compute_farmscore.
     Kharif/Rabi each run the full 20-parameter comprehensive model
     (Vegetation + Radar + Weather + Temperature — see
@@ -413,6 +471,24 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
     """
     t0 = time.time()
     logger.info("compute_farmscore lat=%.5f lng=%.5f", lat, lng)
+
+    # No hand-drawn boundary? Fall back to the offline-detected parcel
+    # layer (see parcel_service). Without a polygon every Earth Engine
+    # reduction runs on a fixed buffer around the point rather than the
+    # actual field, farm area is blank in the report, and the insurance
+    # acreage check has nothing to compare against.
+    #
+    # A drawn polygon always wins — the farmer's own boundary beats a
+    # segmentation guess.
+    detected_parcel = None
+    if not polygon:
+        detected_parcel = find_parcel(lat, lng)
+        if detected_parcel:
+            polygon = detected_parcel["geometry"]
+            logger.info(
+                "Using detected parcel id=%s (%.2f ha) for %.5f,%.5f",
+                detected_parcel["parcel_id"], detected_parcel["area_ha"] or 0.0, lat, lng,
+            )
 
     satellite_data = fetch_farm_data(lat=lat, lng=lng, polygon=polygon)
 
@@ -498,9 +574,43 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
     # air_temp has no per-season fetch, so both seasons share the one
     # value already in comprehensive_raw_values. ----
     seasonal_analysis = satellite_data.get("seasonal_analysis") or {}
-    kharif_raw_values = {**(seasonal_analysis.get("kharif") or {}), "air_temp": comprehensive_raw_values.get("air_temp")}
-    rabi_raw_values = {**(seasonal_analysis.get("rabi") or {}), "air_temp": comprehensive_raw_values.get("air_temp")}
-    result = compute_farmscore_from_seasons(irrigation_for_base, cropping_intensity_for_base, kharif_raw_values, rabi_raw_values)
+
+    def _season_raw(season_key: str) -> dict:
+        """Build one season's raw-value dict.
+
+        `fetch_seasonal_comprehensive_data` merges the window metadata
+        (label/start/end/complete) into the same dict as the measurements, so
+        the parameters are whitelisted here rather than the dict being taken
+        wholesale — otherwise a season with zero satellite data still looks
+        non-empty because of those four metadata keys.
+
+        The annual 2 m air temperature is a whole-year figure, so it is only
+        attached to a season that already has its own signal. Attaching it
+        unconditionally used to turn a season with NO data at all into a dict
+        holding exactly one parameter; the scorer then computed that season's
+        score from that single value, which normalises to ~100, and handed
+        back a perfect 400/400 for a season where nothing was ever grown.
+        """
+        season = seasonal_analysis.get(season_key) or {}
+        measured = {k: v for k, v in season.items() if k in SCORING_PARAMETERS and v is not None}
+        if not measured:
+            return {}
+        # The season now carries its own ERA5 2 m air temperature; the annual
+        # figure is only a fallback for locations where that reduction failed.
+        measured.setdefault("air_temp", comprehensive_raw_values.get("air_temp"))
+        return measured
+
+    def _season_meta(season_key: str) -> dict:
+        season = seasonal_analysis.get(season_key) or {}
+        return {k: season.get(k) for k in ("label", "start", "end", "complete")}
+
+    kharif_raw_values = _season_raw("kharif")
+    rabi_raw_values = _season_raw("rabi")
+    result = compute_farmscore_from_seasons(
+        irrigation_for_base, cropping_intensity_for_base,
+        kharif_raw_values, rabi_raw_values,
+        kharif_meta=_season_meta("kharif"), rabi_meta=_season_meta("rabi"),
+    )
 
     # ---- Surface WHY a parameter came back unavailable (debug aid). Each
     # weather-index fetch already computes a human-readable reason when it
@@ -637,6 +747,10 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
             pool.submit(_safe, "cropping_history", fetch_cropping_history, lat, lng, polygon),
             pool.submit(_safe, "topography", fetch_topography, lat, lng, polygon),
             pool.submit(_safe, "village_population", fetch_village_population, lat, lng),
+            # Reverse geocoding is a blocking HTTP call with its own rate
+            # limit; run it alongside the Earth Engine work rather than
+            # serially after it.
+            pool.submit(_safe, "location", fetch_location, lat, lng),
             pool.submit(_safe, "drought_instances", fetch_drought_instances, lat, lng),
         ]
         for f in futures:
@@ -676,8 +790,13 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
     # the drawn polygon if one exists; without it, only per-hectare yield
     # is estimated (no total tonnage).
     try:
-        top_crop_name = crop_result["primary"]["crop"] if crop_result.get("primary") else None
         area_ha = compute_polygon_area_ha(polygon) if polygon else None
+    except Exception:
+        logger.exception("Polygon area computation failed (non-fatal)")
+        area_ha = None
+
+    try:
+        top_crop_name = crop_result["primary"]["crop"] if crop_result.get("primary") else None
         yield_prediction = estimate_yield(
             top_crop_name, satellite_data.get("ndvi"), area_ha,
             evi=comprehensive_raw_values.get("evi"), ndre=comprehensive_raw_values.get("ndre"),
@@ -698,6 +817,21 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
         "groundwater_trend": satellite_data.get("groundwater_trend"),
         "climate_risk": climate_risk,
         "coordinates": {"lat": lat, "lng": lng},
+        # Administrative + parcel fields. Previously absent entirely, which
+        # left every State/District/Tehsil/Village/Farm Area column blank in
+        # any side-by-side comparison against a land-record report.
+        "location": {
+            **(enrichment.get("location") or {}),
+            "farm_area_ha": round(area_ha, 4) if area_ha is not None else None,
+            "farm_area_source": (
+                f"Auto-detected parcel ({detected_parcel['source']})" if detected_parcel
+                else "Drawn polygon (Earth Engine geodesic area)" if area_ha is not None
+                else "No farm boundary drawn — draw a polygon to measure area"
+            ),
+            "boundary_origin": "detected" if detected_parcel else ("drawn" if area_ha is not None else None),
+            "parcel_id": detected_parcel["parcel_id"] if detected_parcel else None,
+        },
+        "land_record": fetch_land_record(lat, lng),
         "data_reasons": data_reasons,
         "enrichment": enrichment,
         "yield_prediction": yield_prediction,

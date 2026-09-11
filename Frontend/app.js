@@ -46,6 +46,10 @@ async function calculateFarmScore(lat, lng) {
    Map Initialisation
    =================================================================== */
 
+// Monotonic id for the /calculate flow, so a superseded response cannot
+// repaint the page. See computeScore().
+let _scoreRequestId = 0;
+
 let marker = null;
 
 const map = L.map("map", { zoomControl: false }).setView([20.5, 78.9], 5);
@@ -1170,16 +1174,31 @@ async function computeScore() {
     btn.classList.add("loading");
     btnText.textContent = "Fetching satellite data…";
 
+    // /calculate is the slowest call in the app — Earth Engine can take a
+    // couple of minutes. Nothing stopped a second run from starting while
+    // the first was still out, and responses are not guaranteed to come
+    // back in order, so a slow response for farm A could land after farm B's
+    // and repaint the page with A's score under B's marker. The user sees a
+    // completed, plausible-looking result for the wrong field.
+    //
+    // fetchNearbyResources already guards against exactly this with a
+    // request id; the main scoring path did not.
+    const requestId = ++_scoreRequestId;
+
     try {
         btnText.textContent = "Querying Earth Engine…";
         const result = await calculateFarmScore(lat, lng);
+        if (requestId !== _scoreRequestId) return;   // a newer request superseded this one
         renderResult(result);
     } catch (err) {
+        if (requestId !== _scoreRequestId) return;
         errBox.textContent = err.message || "An unexpected error occurred.";
         errBox.style.display = "block";
     } finally {
-        btn.classList.remove("loading");
-        btnText.textContent = "Calculate Bhumi AI Score";
+        if (requestId === _scoreRequestId) {
+            btn.classList.remove("loading");
+            btnText.textContent = "Calculate Bhumi AI Score";
+        }
     }
 }
 

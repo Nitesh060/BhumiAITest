@@ -22,6 +22,7 @@ next to this file. See train_plant_disease.py to train them.
 from __future__ import annotations
 
 import json
+import threading
 import os
 from typing import Dict, List, Optional
 
@@ -66,27 +67,46 @@ def build_model(num_classes: int, pretrained: bool = False) -> nn.Module:
 _model: Optional[nn.Module] = None
 _classes: Optional[List[str]] = None
 _load_attempted = False
+# `_load_model` sets `_load_attempted = True` before doing the slow
+# `torch.load`. Without a lock, a second request arriving during that window
+# saw `_model is None` and `_load_attempted is True` and returned None — so
+# concurrent users got "no trained model available" while the model was in
+# fact loading fine. Same check-then-act race as the season cache.
+_model_lock = threading.Lock()
 
 
 def _load_model() -> Optional[nn.Module]:
     global _model, _classes, _load_attempted
     if _model is not None:
         return _model
-    if _load_attempted:
-        return None
-    _load_attempted = True
 
-    if not (os.path.exists(MODEL_PATH) and os.path.exists(CLASSES_PATH)):
-        return None
+    with _model_lock:
+        # Re-check inside the lock: another thread may have finished loading
+        # while this one queued.
+        if _model is not None:
+            return _model
+        if _load_attempted:
+            return None
+        _load_attempted = True
 
-    with open(CLASSES_PATH) as f:
-        _classes = json.load(f)
+        if not (os.path.exists(MODEL_PATH) and os.path.exists(CLASSES_PATH)):
+            return None
 
-    m = build_model(num_classes=len(_classes))
-    m.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
-    m.eval()
-    _model = m
-    return _model
+        with open(CLASSES_PATH) as f:
+            _classes = json.load(f)
+
+        m = build_model(num_classes=len(_classes))
+        # weights_only=True refuses to unpickle arbitrary objects out of the
+        # checkpoint. Without it, torch.load on a tampered .pt file executes
+        # whatever the pickle says. Older torch has no such parameter.
+        try:
+            state = torch.load(MODEL_PATH, map_location="cpu", weights_only=True)
+        except TypeError:
+            state = torch.load(MODEL_PATH, map_location="cpu")
+        m.load_state_dict(state)
+        m.eval()
+        _model = m
+        return _model
 
 
 def classify_image(image) -> Optional[Dict]:

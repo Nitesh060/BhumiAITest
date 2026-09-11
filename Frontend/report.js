@@ -34,9 +34,25 @@ function renderFarmDetails(data) {
     const soil = e.soil_type || {};
     const yp = data.yield_prediction || {};
     const primary = (data.recommended_crops || {}).primary || {};
+    const loc = data.location || {};
+    const rec = data.land_record || {};
+    // The region was known all along — app.js reverse-geocodes it into the
+    // form fields — but it was never carried into the report, and Land Use
+    // was the string "Agricultural" for every farm regardless of what the
+    // satellite showed.
+    const region = [loc.village, loc.tehsil, loc.district, loc.state].filter(Boolean).join(", ");
+    const landUse = (e.adjacent_land_cover || {}).farm_land_use;
+    const survey = [
+        rec.survey_no && `Survey ${rec.survey_no}`,
+        rec.plot_no && `Plot ${rec.plot_no}`,
+        rec.khatiyan_no && `Khatiyan ${rec.khatiyan_no}`,
+    ].filter(Boolean).join(", ");
     document.getElementById("farm-details-list").innerHTML = [
-        row("📍", "Farm Centroid", `${coords.lat}° N, ${coords.lng}° E`),
-        row("🏞️", "Land Use", "Agricultural"),
+        row("📍", "Farm Centroid", loc.centroid || `${coords.lat}° N, ${coords.lng}° E`),
+        row("🗺️", "Region", region || "—"),
+        row("📐", "Farm Area", loc.farm_area_ha != null ? `${loc.farm_area_ha.toFixed(2)} ha` : "No boundary drawn"),
+        row("📄", "Survey Details", survey || (rec.reason ? "Not available — land-record source not connected" : "—")),
+        row("🏞️", "Land Use", landUse || "—"),
         row("🪨", "Soil Type", soil.label || "—"),
         row("💧", "Irrigation", irrigation.likely_irrigated == null ? "—" : (irrigation.likely_irrigated ? "Likely irrigated" : "Likely rainfed")),
         row("🌿", "Cropping Intensity", intensity.label || "—"),

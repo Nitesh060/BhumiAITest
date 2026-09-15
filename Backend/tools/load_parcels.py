@@ -151,6 +151,8 @@ def main() -> int:
         parser.error("a shapefile is required unless --init is given")
     if not args.source:
         parser.error("--source is required so a bad run can be identified and removed later")
+    if not args.village_code:
+        parser.error("--village-code is required to create a stable parcel_uid")
     if args.replace and not args.village_code:
         parser.error("--replace needs --village-code to know what to replace")
 

@@ -829,6 +829,11 @@ def compute_farmscore(lat: float, lng: float, polygon: Optional[dict] = None) ->
                 else "No farm boundary drawn — draw a polygon to measure area"
             ),
             "boundary_origin": "detected" if detected_parcel else ("drawn" if area_ha is not None else None),
+            "boundary_info": (
+                f"Auto-detected parcel ({detected_parcel.get('source', 'unknown')})" if detected_parcel
+                else "Hand-drawn boundary" if area_ha is not None
+                else None
+            ),
             "parcel_id": detected_parcel["parcel_id"] if detected_parcel else None,
         },
         "land_record": fetch_land_record(lat, lng),

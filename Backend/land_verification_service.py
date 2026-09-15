@@ -73,39 +73,62 @@ def verify_token(token: str, expected_lat: float | None = None, expected_lng: fl
 def register_land_verification_routes(app) -> None:
     @app.get("/odisha-admin/<layer_id>")
     def odisha_admin_proxy(layer_id: str):
-        """Proxy the official Odisha NIC ArcGIS administrative layers.
-
-        The browser cannot reliably call this NIC endpoint because of its
-        cross-origin policy. Keeping the proxy server-side also lets us keep
-        the official service URL in one place and whitelist only layers 0-4.
-        """
+        """Server-side proxy for the official Odisha NIC administrative layers."""
         if layer_id not in ALLOWED_ADMIN_LAYERS:
             return jsonify({"error": "Unsupported Odisha administrative layer"}), 404
-        params = {
-            "f": request.args.get("f", "json"),
-            "where": request.args.get("where", "1=1"),
-            "outFields": request.args.get("outFields", "*"),
-            "returnGeometry": request.args.get("returnGeometry", "false"),
-            "outSR": request.args.get("outSR", "4326"),
-            "resultRecordCount": request.args.get("resultRecordCount", "2000"),
-        }
-        # Layer metadata requests do not use the query parameters.
-        if request.args.get("metadata") == "1":
-            params = {"f": "json"}
+
+        metadata = request.args.get("metadata") == "1"
+        if metadata:
             url = f"{ODISHA_GIS}/{layer_id}"
+            params = {"f": "json"}
         else:
             url = f"{ODISHA_GIS}/{layer_id}/query"
+            params = {
+                "f": request.args.get("f", "json"),
+                "where": request.args.get("where", "1=1"),
+                "outFields": request.args.get("outFields", "*"),
+                "returnGeometry": request.args.get("returnGeometry", "false"),
+                "outSR": request.args.get("outSR", "4326"),
+                "resultRecordCount": request.args.get("resultRecordCount", "1000"),
+            }
+
         try:
-            upstream = requests.get(url, params=params, timeout=20)
+            upstream = requests.get(
+                url,
+                params=params,
+                timeout=(8, 30),
+                headers={"User-Agent": "BhumiAI/1.0 Odisha administrative lookup"},
+            )
             upstream.raise_for_status()
             payload = upstream.json()
             if isinstance(payload, dict) and payload.get("error"):
-                return jsonify(payload), 502
-            return jsonify(payload)
+                return jsonify({
+                    "error": "Odisha GIS query failed",
+                    "detail": payload["error"],
+                    "layer": layer_id,
+                }), 502
+            response = jsonify(payload)
+            response.headers["Cache-Control"] = "public, max-age=300"
+            return response
+        except requests.Timeout:
+            return jsonify({"error": "Odisha GIS service timed out", "layer": layer_id}), 504
         except requests.RequestException as exc:
-            return jsonify({"error": "Odisha GIS service unavailable", "detail": str(exc)}), 502
+            return jsonify({"error": "Odisha GIS service unavailable", "detail": str(exc), "layer": layer_id}), 502
         except ValueError:
-            return jsonify({"error": "Odisha GIS returned invalid JSON"}), 502
+            return jsonify({"error": "Odisha GIS returned invalid JSON", "layer": layer_id}), 502
+
+    @app.get("/odisha-admin-health")
+    def odisha_admin_health():
+        """Small diagnostic endpoint used to distinguish frontend/CORS failures from NIC reachability."""
+        try:
+            r = requests.get(f"{ODISHA_GIS}/1", params={"f": "json"}, timeout=(5, 12), headers={"User-Agent": "BhumiAI/1.0"})
+            r.raise_for_status()
+            payload = r.json()
+            return jsonify({"ok": not bool(payload.get("error")), "upstream_status": r.status_code, "fields_available": bool(payload.get("fields"))})
+        except requests.Timeout:
+            return jsonify({"ok": False, "error": "upstream_timeout"}), 504
+        except Exception as exc:
+            return jsonify({"ok": False, "error": "upstream_unavailable", "detail": str(exc)}), 502
 
     @app.post("/land-verification")
     def land_verification():

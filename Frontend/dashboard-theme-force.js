@@ -6,10 +6,10 @@
     if (!isDashboard) return;
     document.documentElement.setAttribute("data-theme", "light");
 
-    // Load the administrative fallback with a new cache-busting version.
+    // Load the administrative fallback with a fresh cache-busting version.
     if (!document.querySelector('script[data-bhumi-odisha-admin-fix]')) {
         const script = document.createElement("script");
-        script.src = "odisha-admin-fix.js?v=3";
+        script.src = "odisha-admin-fix.js?v=4";
         script.dataset.bhumiOdishaAdminFix = "true";
         document.head.appendChild(script);
     }

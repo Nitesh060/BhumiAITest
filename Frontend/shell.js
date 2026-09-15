@@ -259,14 +259,14 @@ function bhumiAuthFetch(url, options = {}) {
         return data.features||[];
     }
     async function loadDistricts(){
-        const res=await nativeFetch(`${API}/odisha/districts`);
+        const res=await nativeFetch(`${API}/api/odisha/districts`);
         const data=await res.json();
         if(!res.ok||!data.districts) throw new Error("Could not load districts from backend");
         const items=data.districts.map(d=>({value:d,label:d})).sort((a,b)=>a.label.localeCompare(b.label));
         adminCache.districts=items;setOptions("blv-district",items,"Select District");
     }
     async function loadBlocks(districtName){
-        const res=await nativeFetch(`${API}/odisha/blocks/${encodeURIComponent(districtName)}`);
+        const res=await nativeFetch(`${API}/api/odisha/blocks/${encodeURIComponent(districtName)}`);
         const data=await res.json();
         if(!res.ok||!data.blocks) throw new Error("Could not load blocks from backend");
         const items=data.blocks.map(b=>({value:b,label:b,code:b})).sort((a,b)=>a.label.localeCompare(b.label));

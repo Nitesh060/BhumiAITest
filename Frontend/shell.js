@@ -259,15 +259,18 @@ function bhumiAuthFetch(url, options = {}) {
         return data.features||[];
     }
     async function loadDistricts(){
-        const features=await arcQuery(1,"stname='Odisha'","dtname,dtcode11,dist_lgd",false);
-        const seen=new Map();features.forEach(f=>{const a=f.attributes;if(a.dtname&&!seen.has(a.dtcode11))seen.set(a.dtcode11,{value:a.dtcode11,label:a.dtname});});
-        const items=[...seen.values()].sort((a,b)=>a.label.localeCompare(b.label));
+        const res=await nativeFetch(`${API}/odisha/districts`);
+        const data=await res.json();
+        if(!res.ok||!data.districts) throw new Error("Could not load districts from backend");
+        const items=data.districts.map(d=>({value:d,label:d})).sort((a,b)=>a.label.localeCompare(b.label));
         adminCache.districts=items;setOptions("blv-district",items,"Select District");
     }
-    async function loadBlocks(code){
-        const features=await arcQuery(2,`stcode11='21' AND dtcode11='${String(code).replace(/'/g,"''")}'`,"block_name,blkcode11,block_lgd",false);
-        const seen=new Map();features.forEach(f=>{const a=f.attributes;if(a.block_name&&!seen.has(a.blkcode11))seen.set(a.blkcode11,{value:a.block_name,label:a.block_name,code:a.blkcode11});});
-        const items=[...seen.values()].sort((a,b)=>a.label.localeCompare(b.label));setOptions("blv-block",items,"Select Tehsil / Block");return items;
+    async function loadBlocks(districtName){
+        const res=await nativeFetch(`${API}/odisha/blocks/${encodeURIComponent(districtName)}`);
+        const data=await res.json();
+        if(!res.ok||!data.blocks) throw new Error("Could not load blocks from backend");
+        const items=data.blocks.map(b=>({value:b,label:b,code:b})).sort((a,b)=>a.label.localeCompare(b.label));
+        setOptions("blv-block",items,"Select Tehsil / Block");return items;
     }
     async function loadGPs(districtCode,blockName){
         const where=`stcode11='21' AND dtcode11='${String(districtCode).replace(/'/g,"''")}' AND block_name='${String(blockName).replace(/'/g,"''")}'`;

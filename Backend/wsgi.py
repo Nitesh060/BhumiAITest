@@ -44,7 +44,6 @@ EXPENSIVE_PATHS = {
 RATE_LIMITED_METHODS = {"POST", "GET"}
 TRUSTED_PROXY_HOPS = int(os.getenv("TRUSTED_PROXY_HOPS", "0"))
 MAX_TRACKED_CLIENTS = int(os.getenv("MAX_TRACKED_CLIENTS", "10000"))
-
 _hits: dict[str, deque[float]] = defaultdict(deque)
 
 
@@ -91,35 +90,34 @@ def _response(start_response, status, body, headers=None):
 
 
 def _land_verification_required(environ, start_response):
-    """Production-side gate: /calculate is unreachable without a fresh
-    agricultural verification token issued by /land-verification."""
+    """Production-side gate: /calculate requires a fresh token issued by
+    /land-verification and the token must be bound to the same coordinates."""
     if environ.get("PATH_INFO") != "/calculate" or environ.get("REQUEST_METHOD") != "POST":
         return None
-
     length = environ.get("CONTENT_LENGTH")
     try:
         n = int(length or "0")
     except ValueError:
         return _response(start_response, "400 Bad Request", '{"error":"Invalid Content-Length"}')
-
     if n > MAX_REQUEST_BYTES:
         return _response(start_response, "413 Payload Too Large", '{"error":"Request too large"}')
 
     raw = environ["wsgi.input"].read(n) if n else b""
     environ["wsgi.input"] = io.BytesIO(raw)
-
     try:
         body = json.loads(raw.decode("utf-8"))
     except Exception:
         return _response(start_response, "400 Bad Request", '{"error":"Request body must be valid JSON"}')
 
     token = body.get("land_verification_token") if isinstance(body, dict) else None
-    if not token or not verify_token(str(token)):
-        return _response(
-            start_response,
-            "403 Forbidden",
-            '{"error":"Agricultural land verification is required before FarmScore can be calculated","code":"LAND_VERIFICATION_REQUIRED"}',
-        )
+    try:
+        lat = float(body.get("lat"))
+        lng = float(body.get("lng"))
+    except (TypeError, ValueError, AttributeError):
+        return _response(start_response, "400 Bad Request", '{"error":"Latitude and longitude are required"}')
+
+    if not token or not verify_token(str(token), expected_lat=lat, expected_lng=lng):
+        return _response(start_response, "403 Forbidden", '{"error":"Agricultural land verification is required for these coordinates before FarmScore can be calculated","code":"LAND_VERIFICATION_REQUIRED"}')
     return None
 
 
@@ -134,7 +132,6 @@ def middleware(environ, start_response):
     land_gate_response = _land_verification_required(environ, start_response)
     if land_gate_response is not None:
         return land_gate_response
-
     if _rate_limited(environ):
         return _response(start_response, "429 Too Many Requests", '{"error":"Rate limit exceeded. Please wait before retrying."}', [("Retry-After", str(RATE_WINDOW_SECONDS))])
 

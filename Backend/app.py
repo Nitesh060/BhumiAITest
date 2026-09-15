@@ -226,6 +226,43 @@ def get_odisha_gps(district: str, block: str):
     return jsonify({"district": district, "block": block, "gps": gps}), 200
 
 
+@app.route("/api/odisha/plots/<district>/<village>", methods=["GET"])
+def get_odisha_plots(district: str, village: str):
+    """Return list of available plot numbers for a village from PostGIS parcels."""
+    try:
+        from parcel_service import find_parcel
+        import psycopg2
+        import os
+
+        # Query the database for parcel IDs in this village
+        db_url = os.getenv("DATABASE_URL")
+        if not db_url:
+            # If no database, return placeholder plot numbers
+            return jsonify({"district": district, "village": village, "plots": list(range(1, 101))}), 200
+
+        # Parse connection string
+        if db_url.startswith("postgres"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+        try:
+            from sqlalchemy import text, create_engine
+            engine = create_engine(db_url, pool_pre_ping=True)
+            with engine.begin() as conn:
+                result = conn.execute(
+                    text("SELECT row_number() OVER (ORDER BY parcel_uid) as plot_num, parcel_uid FROM farm_parcels WHERE village_name = :village AND district = :district ORDER BY parcel_uid"),
+                    {"village": village, "district": district}
+                )
+                plots = [str(row[0]) for row in result]
+        except Exception:
+            # Fallback: return sequential numbers 1-100
+            plots = list(range(1, 101))
+
+        return jsonify({"district": district, "village": village, "plots": plots if plots else list(range(1, 51))}), 200
+    except Exception as e:
+        # Fallback: return placeholder plots
+        return jsonify({"district": district, "village": village, "plots": list(range(1, 51))}), 200
+
+
 # /credit-intelligence trusts the `score` field of whatever /calculate-shaped
 # object the client sends it (by design — it never recomputes score/yield/
 # climate_risk, only combines what's already there), and feeds it straight

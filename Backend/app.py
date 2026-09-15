@@ -193,6 +193,31 @@ def health_check():
     return jsonify({"status": "ok", "service": "FarmScore API"}), 200
 
 
+@app.route("/api/odisha/districts", methods=["GET"])
+def get_odisha_districts():
+    """Return list of Odisha districts for cadastral workflow."""
+    from odisha_admin_data import get_districts
+    return jsonify({"districts": get_districts()}), 200
+
+
+@app.route("/api/odisha/blocks/<district>", methods=["GET"])
+def get_odisha_blocks(district: str):
+    """Return list of blocks in an Odisha district."""
+    from odisha_admin_data import get_blocks
+    blocks = get_blocks(district)
+    if not blocks:
+        return jsonify({"error": f"District '{district}' not found"}), 404
+    return jsonify({"district": district, "blocks": blocks}), 200
+
+
+@app.route("/api/odisha/villages/<district>/<block>", methods=["GET"])
+def get_odisha_villages(district: str, block: str):
+    """Return list of villages in an Odisha block."""
+    from odisha_admin_data import get_villages
+    villages = get_villages(district, block)
+    return jsonify({"district": district, "block": block, "villages": villages}), 200
+
+
 # /credit-intelligence trusts the `score` field of whatever /calculate-shaped
 # object the client sends it (by design — it never recomputes score/yield/
 # climate_risk, only combines what's already there), and feeds it straight

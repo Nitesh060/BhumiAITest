@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import io
+import json
 import os
 import sys
 import time
@@ -13,17 +15,6 @@ try:
     app_module = importlib.import_module("app")
     app = app_module.app
 except Exception:
-    # Render's deploy log has repeatedly shown only:
-    #   ImportError: cannot import name 'app' from 'app'
-    # which is gunicorn's generic message for "the app module didn't
-    # expose an `app` attribute" — it hides whatever ACTUALLY happened
-    # inside app.py's own execution (a real exception partway through
-    # its imports would normally show its own traceback instead of
-    # this generic one, so something more specific is going on). Print
-    # everything we can here so the next deploy log shows the real
-    # cause instead of this dead end, then re-raise so the process
-    # still fails exactly as before — this changes nothing except what
-    # gets printed.
     print("=" * 70, file=sys.stderr)
     print("FATAL: failed to import the Flask `app` object from app.py.", file=sys.stderr)
     try:
@@ -37,20 +28,10 @@ except Exception:
     raise
 
 from alphaearth_service import register_alphaearth_routes
+from land_verification_service import register_land_verification_routes, verify_token
 
 register_alphaearth_routes(app)
-
-# The seasonal (Kharif + Rabi) data-pipeline rebinding that used to live
-# here — reassigning app_module.fetch_farm_data/fetch_spi/etc. on this
-# imported module's globals, from the outside, after import — has moved
-# into app.py itself, right above compute_farmscore(). It was invisible
-# here to anyone reading app.py (or the "real" per-parameter modules it
-# imports) on its own, which is why an earlier fix to
-# weather_indices_service.py's SPI/solar-radiation logic had zero effect
-# on the live site: those functions were never actually being called,
-# only their seasonal replacements — defined and rebound in this file —
-# were. See app.py for the current (explicit) version of this logic.
-
+register_land_verification_routes(app)
 
 MAX_REQUEST_BYTES = int(os.getenv("MAX_REQUEST_BYTES", str(2 * 1024 * 1024)))
 RATE_WINDOW_SECONDS = int(os.getenv("RATE_WINDOW_SECONDS", "60"))
@@ -58,35 +39,10 @@ RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
 EXPENSIVE_PATHS = {
     "/calculate", "/comprehensive-score", "/diagnose", "/spectral", "/spectral-indices", "/sar-moisture",
     "/historical-timeline", "/before-after", "/vegetation-heatmap", "/ndvi-heatmap", "/crop-intelligence",
-    "/farm-advisor", "/risk-analysis",
-    # GET endpoints that also cost real money on every call. /alphaearth is
-    # registered from this file (register_alphaearth_routes) and runs Earth
-    # Engine; /mandi-price and /major-crops call data.gov.in on a metered
-    # key. All three are unauthenticated, and the limiter used to skip every
-    # GET outright, so they could be hammered without limit.
-    "/alphaearth", "/mandi-price", "/major-crops",
+    "/farm-advisor", "/risk-analysis", "/alphaearth", "/mandi-price", "/major-crops",
 }
 RATE_LIMITED_METHODS = {"POST", "GET"}
-# Number of trusted reverse proxies in front of this app. On a managed host
-# (Render, Heroku, most load balancers) every request arrives with the
-# proxy's own address in REMOTE_ADDR, so keying the rate limiter on
-# REMOTE_ADDR alone puts EVERY user in one shared bucket: the 21st request
-# per minute from the whole internet is refused, whoever sent it, while a
-# single abusive client is never isolated.
-#
-# The fix is to read the client address out of X-Forwarded-For — but that
-# header is attacker-controlled, so a client could otherwise mint a fresh
-# identity per request and bypass the limit entirely. Counting hops from the
-# RIGHT is what makes it safe: each trusted proxy appends the address it saw,
-# so the Nth-from-last entry is the one the outermost trusted proxy observed
-# and a client cannot forge past it.
-#
-# Default 0 preserves the previous behaviour. Set TRUSTED_PROXY_HOPS=1 when
-# deploying behind a single proxy (this repo's Render setup).
 TRUSTED_PROXY_HOPS = int(os.getenv("TRUSTED_PROXY_HOPS", "0"))
-
-# Stale buckets were never removed, so the dict grew one entry per distinct
-# ip:path forever — unbounded memory on a long-running process.
 MAX_TRACKED_CLIENTS = int(os.getenv("MAX_TRACKED_CLIENTS", "10000"))
 
 _hits: dict[str, deque[float]] = defaultdict(deque)
@@ -102,7 +58,6 @@ def _client_ip(environ):
 
 
 def _prune(now):
-    """Drop buckets with no hits inside the current window."""
     cutoff = now - RATE_WINDOW_SECONDS
     for key in [k for k, b in _hits.items() if not b or b[-1] < cutoff]:
         del _hits[key]
@@ -115,7 +70,9 @@ def _rate_limited(environ):
     now = time.time()
     if len(_hits) > MAX_TRACKED_CLIENTS:
         _prune(now)
-    key = f"{_client_ip(environ)}:{path}"; bucket = _hits[key]; cutoff = now - RATE_WINDOW_SECONDS
+    key = f"{_client_ip(environ)}:{path}"
+    bucket = _hits[key]
+    cutoff = now - RATE_WINDOW_SECONDS
     while bucket and bucket[0] < cutoff:
         bucket.popleft()
     if len(bucket) >= RATE_LIMIT:
@@ -127,9 +84,43 @@ def _rate_limited(environ):
 def _response(start_response, status, body, headers=None):
     data = body.encode("utf-8")
     base = [("Content-Type", "application/json; charset=utf-8"), ("Content-Length", str(len(data)))]
-    if headers: base.extend(headers)
+    if headers:
+        base.extend(headers)
     start_response(status, base)
     return [data]
+
+
+def _land_verification_required(environ, start_response):
+    """Production-side gate: /calculate is unreachable without a fresh
+    agricultural verification token issued by /land-verification."""
+    if environ.get("PATH_INFO") != "/calculate" or environ.get("REQUEST_METHOD") != "POST":
+        return None
+
+    length = environ.get("CONTENT_LENGTH")
+    try:
+        n = int(length or "0")
+    except ValueError:
+        return _response(start_response, "400 Bad Request", '{"error":"Invalid Content-Length"}')
+
+    if n > MAX_REQUEST_BYTES:
+        return _response(start_response, "413 Payload Too Large", '{"error":"Request too large"}')
+
+    raw = environ["wsgi.input"].read(n) if n else b""
+    environ["wsgi.input"] = io.BytesIO(raw)
+
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return _response(start_response, "400 Bad Request", '{"error":"Request body must be valid JSON"}')
+
+    token = body.get("land_verification_token") if isinstance(body, dict) else None
+    if not token or not verify_token(str(token)):
+        return _response(
+            start_response,
+            "403 Forbidden",
+            '{"error":"Agricultural land verification is required before FarmScore can be calculated","code":"LAND_VERIFICATION_REQUIRED"}',
+        )
+    return None
 
 
 def middleware(environ, start_response):
@@ -139,24 +130,19 @@ def middleware(environ, start_response):
             return _response(start_response, "413 Payload Too Large", '{"error":"Request too large"}')
     except ValueError:
         return _response(start_response, "400 Bad Request", '{"error":"Invalid Content-Length"}')
+
+    land_gate_response = _land_verification_required(environ, start_response)
+    if land_gate_response is not None:
+        return land_gate_response
+
     if _rate_limited(environ):
         return _response(start_response, "429 Too Many Requests", '{"error":"Rate limit exceeded. Please wait before retrying."}', [("Retry-After", str(RATE_WINDOW_SECONDS))])
 
     def secured_start_response(status, headers, exc_info=None):
-        # Only strip the "Server" header (info-leak hardening) — CORS
-        # headers are left exactly as Flask-CORS set them. This used to
-        # also strip Access-Control-Allow-Origin/-Credentials and only
-        # re-add them for a single exact-match ALLOWED_ORIGIN, which broke
-        # the Frontend entirely whenever that env var wasn't set (every
-        # cross-origin response silently lost its CORS header — the
-        # "Failed to fetch" bug documented in wsgi_render.py). app.py's own
-        # CORS(app, resources=...) now reads the same ALLOWED_ORIGIN env
-        # var and is the single source of truth for which origins are
-        # allowed — this middleware no longer needs to duplicate that
-        # logic, just add the extra hardening headers on top of it.
         filtered = [(k, v) for k, v in headers if k.lower() != "server"]
         filtered.extend([
-            ("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "SAMEORIGIN"),
+            ("X-Content-Type-Options", "nosniff"),
+            ("X-Frame-Options", "SAMEORIGIN"),
             ("Referrer-Policy", "strict-origin-when-cross-origin"),
             ("Permissions-Policy", "geolocation=(), microphone=(), camera=()"),
         ])

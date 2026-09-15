@@ -15,23 +15,14 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 from typing import Any, Dict
 
 from flask import jsonify, request
 
-
-ODISHA_BBOX = {
-    "min_lat": 17.78,
-    "max_lat": 22.65,
-    "min_lng": 81.35,
-    "max_lng": 87.55,
-}
-
-AGRICULTURAL_RE = __import__("re").compile(
-    r"agri|agricult|cultiv|crop|paddy|kharif|rabi|garden|orchard|fallow|farm|plantation",
-    __import__("re").IGNORECASE,
-)
+ODISHA_BBOX = {"min_lat": 17.78, "max_lat": 22.65, "min_lng": 81.35, "max_lng": 87.55}
+AGRICULTURAL_RE = re.compile(r"agri|agricult|cultiv|crop|paddy|kharif|rabi|garden|orchard|fallow|farm|plantation", re.IGNORECASE)
 
 
 def _secret() -> bytes:
@@ -40,9 +31,7 @@ def _secret() -> bytes:
 
 
 def _is_agricultural(label: Any) -> bool:
-    if label is None:
-        return False
-    return bool(AGRICULTURAL_RE.search(str(label)))
+    return bool(label is not None and AGRICULTURAL_RE.search(str(label)))
 
 
 def _normalise_payload(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -63,12 +52,11 @@ def _normalise_payload(body: Dict[str, Any]) -> Dict[str, Any]:
 def _sign(payload: Dict[str, Any], issued_at: int) -> str:
     message = json.dumps({"v": payload, "iat": issued_at}, sort_keys=True, separators=(",", ":"))
     digest = hmac.new(_secret(), message.encode("utf-8"), hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(
-        json.dumps({"v": payload, "iat": issued_at, "sig": base64.urlsafe_b64encode(digest).decode("ascii")}, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii")
+    outer = {"v": payload, "iat": issued_at, "sig": base64.urlsafe_b64encode(digest).decode("ascii")}
+    return base64.urlsafe_b64encode(json.dumps(outer, separators=(",", ":")).encode("utf-8")).decode("ascii")
 
 
-def verify_token(token: str, max_age: int = 900) -> bool:
+def verify_token(token: str, expected_lat: float | None = None, expected_lng: float | None = None, max_age: int = 900) -> bool:
     try:
         outer = json.loads(base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8"))
         issued_at = int(outer["iat"])
@@ -76,7 +64,13 @@ def verify_token(token: str, max_age: int = 900) -> bool:
             return False
         payload = outer["v"]
         expected = _sign(payload, issued_at)
-        return hmac.compare_digest(expected, token)
+        if not hmac.compare_digest(expected, token):
+            return False
+        if expected_lat is not None and abs(float(payload["lat"]) - float(expected_lat)) > 1e-5:
+            return False
+        if expected_lng is not None and abs(float(payload["lng"]) - float(expected_lng)) > 1e-5:
+            return False
+        return True
     except Exception:
         return False
 
@@ -94,37 +88,24 @@ def register_land_verification_routes(app) -> None:
         missing = [key for key in required if not data[key]]
         if missing:
             return jsonify({"verified": False, "error": "Missing verification fields", "missing": missing}), 400
-
         if data["state"].casefold() != "odisha":
             return jsonify({"verified": False, "error": "This verification gate currently supports Odisha only"}), 400
-
         if data["source"].casefold() != "odisha 4k geo":
             return jsonify({"verified": False, "error": "Parcel must be verified from Odisha 4K GEO cadastral data"}), 400
-
         if not (ODISHA_BBOX["min_lat"] <= data["lat"] <= ODISHA_BBOX["max_lat"] and ODISHA_BBOX["min_lng"] <= data["lng"] <= ODISHA_BBOX["max_lng"]):
             return jsonify({"verified": False, "error": "Selected coordinates are outside the Odisha verification area"}), 400
 
-        agricultural = _is_agricultural(data["land_use"])
-        issued_at = int(time.time())
-
-        if not agricultural:
+        if not _is_agricultural(data["land_use"]):
             return jsonify({
-                "verified": True,
-                "agricultural": False,
-                "farm_score_allowed": False,
-                "land_use": data["land_use"],
-                "source": data["source"],
+                "verified": True, "agricultural": False, "farm_score_allowed": False,
+                "land_use": data["land_use"], "source": data["source"],
                 "message": "Selected parcel is not classified as agricultural land in the selected cadastral metadata. FarmScore is blocked.",
             }), 200
 
-        token = _sign(data, issued_at)
+        token = _sign(data, int(time.time()))
         return jsonify({
-            "verified": True,
-            "agricultural": True,
-            "farm_score_allowed": True,
-            "land_use": data["land_use"],
-            "source": data["source"],
-            "verification_token": token,
-            "expires_in_seconds": 900,
+            "verified": True, "agricultural": True, "farm_score_allowed": True,
+            "land_use": data["land_use"], "source": data["source"],
+            "verification_token": token, "expires_in_seconds": 900,
             "message": "Agricultural land-use classification verified from Odisha 4K GEO metadata. This is not a legal title/ROR certification.",
         }), 200

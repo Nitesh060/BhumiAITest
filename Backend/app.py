@@ -218,6 +218,14 @@ def get_odisha_villages(district: str, block: str):
     return jsonify({"district": district, "block": block, "villages": villages}), 200
 
 
+@app.route("/api/odisha/gps/<district>/<block>", methods=["GET"])
+def get_odisha_gps(district: str, block: str):
+    """Return list of Gram Panchayats in an Odisha block."""
+    from odisha_admin_data import get_gps
+    gps = get_gps(district, block)
+    return jsonify({"district": district, "block": block, "gps": gps}), 200
+
+
 # /credit-intelligence trusts the `score` field of whatever /calculate-shaped
 # object the client sends it (by design — it never recomputes score/yield/
 # climate_risk, only combines what's already there), and feeds it straight

@@ -272,17 +272,19 @@ function bhumiAuthFetch(url, options = {}) {
         const items=data.blocks.map(b=>({value:b,label:b,code:b})).sort((a,b)=>a.label.localeCompare(b.label));
         setOptions("blv-block",items,"Select Tehsil / Block");return items;
     }
-    async function loadGPs(districtCode,blockName){
-        const where=`stcode11='21' AND dtcode11='${String(districtCode).replace(/'/g,"''")}' AND block_name='${String(blockName).replace(/'/g,"''")}'`;
-        const features=await arcQuery(3,where,"gp_code,gp_name,block_name,dtcode11",false);
-        const seen=new Map();features.forEach(f=>{const a=f.attributes;if(a.gp_name&&!seen.has(String(a.gp_code)))seen.set(String(a.gp_code),{value:String(a.gp_code),label:a.gp_name});});
-        const items=[...seen.values()].sort((a,b)=>a.label.localeCompare(b.label));setOptions("blv-gp",items,"Select Gram Panchayat");return items;
+    async function loadGPs(districtName,blockName){
+        const res=await nativeFetch(`${API}/api/odisha/gps/${encodeURIComponent(districtName)}/${encodeURIComponent(blockName)}`);
+        const data=await res.json();
+        if(!res.ok||!data.gps) throw new Error("Could not load Gram Panchayats from backend");
+        const items=data.gps.map(g=>({value:g,label:g})).sort((a,b)=>a.label.localeCompare(b.label));
+        setOptions("blv-gp",items,"Select Gram Panchayat");return items;
     }
-    async function loadVillages(districtCode,gpCode){
-        const where=`stcode11='21' AND dtcode11='${String(districtCode).replace(/'/g,"''")}' AND gp_code='${String(gpCode).replace(/'/g,"''")}'`;
-        const features=await arcQuery(4,where,"vilcode11,vilname11,gp_code,gp_name,sdtname,dtname",false);
-        const seen=new Map();features.forEach(f=>{const a=f.attributes;if(a.vilname11&&!seen.has(a.vilcode11))seen.set(a.vilcode11,{value:a.vilcode11,label:a.vilname11});});
-        const items=[...seen.values()].sort((a,b)=>a.label.localeCompare(b.label));setOptions("blv-village",items,"Select Village");return items;
+    async function loadVillages(districtName,blockName){
+        const res=await nativeFetch(`${API}/api/odisha/villages/${encodeURIComponent(districtName)}/${encodeURIComponent(blockName)}`);
+        const data=await res.json();
+        if(!res.ok||!data.villages) throw new Error("Could not load villages from backend");
+        const items=data.villages.map(v=>({value:v,label:v})).sort((a,b)=>a.label.localeCompare(b.label));
+        setOptions("blv-village",items,"Select Village");return items;
     }
     async function villageGeometry(vilCode){
         const features=await arcQuery(4,`vilcode11='${String(vilCode).replace(/'/g,"''")}'`,"vilcode11,vilname11,gp_code,gp_name,dtname,sdtname",true);
@@ -363,7 +365,7 @@ function bhumiAuthFetch(url, options = {}) {
         const calc=document.getElementById("calc-btn");if(calc){calc.disabled=true;calc.title="Verify an agricultural parcel first";}
         document.getElementById("blv-district").addEventListener("change",async e=>{resetFrom("district");if(!e.target.value)return;try{setStatus("Loading Tehsil / Block…");await loadBlocks(e.target.value);}catch(err){setStatus("Could not load blocks.","bad");}});
         document.getElementById("blv-block").addEventListener("change",async e=>{resetFrom("block");const d=document.getElementById("blv-district").value;if(!e.target.value)return;try{setStatus("Loading Gram Panchayats…");await loadGPs(d,e.target.value);}catch(err){setStatus("Could not load Gram Panchayats.","bad");}});
-        document.getElementById("blv-gp").addEventListener("change",async e=>{resetFrom("gp");const d=document.getElementById("blv-district").value;if(!e.target.value)return;try{setStatus("Loading villages…");await loadVillages(d,e.target.value);}catch(err){setStatus("Could not load villages.","bad");}});
+        document.getElementById("blv-gp").addEventListener("change",async e=>{resetFrom("gp");const d=document.getElementById("blv-district").value;const b=document.getElementById("blv-block").value;if(!e.target.value)return;try{setStatus("Loading villages…");await loadVillages(d,b);}catch(err){setStatus("Could not load villages.","bad");}});
         document.getElementById("blv-village").addEventListener("change",async e=>{verificationToken=null;window.__BHUMI_LAND_VERIFICATION_TOKEN=null;const calc=document.getElementById("calc-btn");if(calc)calc.disabled=true;if(!e.target.value)return;try{const c=await villageGeometry(e.target.value);if(c&&cadMap){cadMap.flyTo({center:c,zoom:15});}setStatus("Village selected. Zoom in and click the required cadastral plot.","wait");}catch(err){setStatus("Village selected, but map could not zoom to it.","bad");}});
         document.getElementById("blv-find-plot").addEventListener("click",()=>{const q=document.getElementById("blv-plot").value.trim().toLowerCase();if(!q||!cadMap){setStatus("Enter a Plot No. and make sure the cadastral map is loaded.","bad");return;}const layers=parcelLayerIds.filter(id=>id.includes("fill"));const fs=cadMap.queryRenderedFeatures(undefined,{layers});const f=fs.find(x=>extractPlotNo(x.properties||{}).toLowerCase()===q);if(f){const c=f.geometry?.coordinates?.[0]?.[0]?.[0];const ll=c&&Array.isArray(c)?c:null;selectParcel(f,ll?ll[0]:cadMap.getCenter().lng,ll?ll[1]:cadMap.getCenter().lat);}else setStatus("Plot not found in the currently loaded map view. Zoom into the village and click the parcel.","bad");});
         document.getElementById("blv-verify").addEventListener("click",verifyParcel);

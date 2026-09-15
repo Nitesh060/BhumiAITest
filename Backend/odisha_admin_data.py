@@ -87,15 +87,40 @@ ODISHA_DISTRICTS = {
     }
 }
 
+# Sample Gram Panchayats per block
+SAMPLE_GPs = {
+    "Angul-Angul": ["Angul GP", "Kusupur GP", "Nishinda GP"],
+    "Angul-Athgarh": ["Athgarh GP", "Balianta GP"],
+    "Bhadrak-Bhadrak": ["Bhadrak GP", "Tihidi GP"],
+    "Bhadrak-Chandbali": ["Chandbali GP", "Mangaraj GP"],
+}
+
 # Sample villages per block (can be expanded)
 SAMPLE_VILLAGES = {
     # Angul district
-    "Angul-Angul": ["Kusupur", "Bari", "Nishinda", "Garposh", "Sundarposh"],
-    "Angul-Athgarh": ["Athgarh", "Balianta", "Garh", "Sapangarh"],
+    "Angul-Angul": ["Kusupur", "Bari", "Nishinda", "Garposh", "Sundarposh", "Kulei", "Baunsuni"],
+    "Angul-Athgarh": ["Athgarh", "Balianta", "Garh", "Sapangarh", "Suanala"],
+    "Angul-Chhendipada": ["Chhendipada", "Rengali", "Anla"],
+    "Angul-Gamharha": ["Gamharha", "Kaliapani"],
+    "Angul-Kisinda": ["Kisinda", "Bindusagar"],
+    "Angul-Patnagarh": ["Patnagarh", "Dhanisahi"],
+    "Angul-Rengali": ["Rengali", "Talcher"],
+    "Angul-Talcher": ["Talcher", "Kuanrmunda"],
     # Bhadrak district
-    "Bhadrak-Bhadrak": ["Bhadrak", "Tihidi", "Balarampalli", "Kuakhia"],
-    "Bhadrak-Chandbali": ["Chandbali", "Mangaraj", "Dhamra"],
-    # Add more as needed
+    "Bhadrak-Bhadrak": ["Bhadrak", "Tihidi", "Balarampalli", "Kuakhia", "Chandbali"],
+    "Bhadrak-Chandbali": ["Chandbali", "Mangaraj", "Dhamra", "Balasore"],
+    "Bhadrak-Dhamnagar": ["Dhamnagar", "Fakirpur"],
+    "Bhadrak-Paradeep": ["Paradeep", "Jagatsinghpur"],
+    "Bhadrak-Tihidi": ["Tihidi", "Balasore"],
+    "Bhadrak-Uchgaon": ["Uchgaon", "Bhadrak"],
+    # Balasore district
+    "Balasore-Balasore": ["Balasore", "Chandinichak", "Mahisapat"],
+    "Balasore-Bhadrak": ["Bhadrak", "Tihidi"],
+    "Balasore-Bhograi": ["Bhograi", "Haripur"],
+    "Balasore-Jaleswar": ["Jaleswar", "Balianta"],
+    "Balasore-Nilagiri": ["Nilagiri", "Nilakanta"],
+    "Balasore-Rasgovindapur": ["Rasgovindapur", "Govindpur"],
+    "Balasore-Soro": ["Soro", "Bheramara"],
 }
 
 def get_districts():
@@ -105,6 +130,14 @@ def get_districts():
 def get_blocks(district: str):
     """Return list of blocks in a district."""
     return ODISHA_DISTRICTS.get(district, {}).get("blocks", [])
+
+def get_gps(district: str, block: str):
+    """Return list of Gram Panchayats in a block."""
+    key = f"{district}-{block}"
+    if key in SAMPLE_GPs:
+        return SAMPLE_GPs[key]
+    # Generate default GPs based on block name
+    return [f"{block} GP"]
 
 def get_villages(district: str, block: str):
     """Return list of villages in a block."""

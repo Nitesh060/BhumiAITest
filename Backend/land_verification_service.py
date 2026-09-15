@@ -1,12 +1,4 @@
-"""Odisha cadastral verification gate for FarmScore.
-
-The frontend obtains parcel metadata from the Odisha 4K GEO cadastral
-source and sends the selected administrative/plot context here. This
-service validates the workflow, classifies only explicit agricultural
-land-use labels as eligible, and issues a short-lived signed token.
-
-This is an eligibility gate, not a legal title/ROR certification.
-"""
+"""Odisha cadastral verification and administrative lookup services."""
 
 from __future__ import annotations
 
@@ -19,9 +11,12 @@ import re
 import time
 from typing import Any, Dict
 
+import requests
 from flask import jsonify, request
 
 ODISHA_BBOX = {"min_lat": 17.78, "max_lat": 22.65, "min_lng": 81.35, "max_lng": 87.55}
+ODISHA_GIS = "https://webgis1.nic.in/publishing/rest/services/odisha/odisha/MapServer"
+ALLOWED_ADMIN_LAYERS = {"0", "1", "2", "3", "4"}
 AGRICULTURAL_RE = re.compile(r"agri|agricult|cultiv|crop|paddy|kharif|rabi|garden|orchard|fallow|farm|plantation", re.IGNORECASE)
 
 
@@ -76,6 +71,42 @@ def verify_token(token: str, expected_lat: float | None = None, expected_lng: fl
 
 
 def register_land_verification_routes(app) -> None:
+    @app.get("/odisha-admin/<layer_id>")
+    def odisha_admin_proxy(layer_id: str):
+        """Proxy the official Odisha NIC ArcGIS administrative layers.
+
+        The browser cannot reliably call this NIC endpoint because of its
+        cross-origin policy. Keeping the proxy server-side also lets us keep
+        the official service URL in one place and whitelist only layers 0-4.
+        """
+        if layer_id not in ALLOWED_ADMIN_LAYERS:
+            return jsonify({"error": "Unsupported Odisha administrative layer"}), 404
+        params = {
+            "f": request.args.get("f", "json"),
+            "where": request.args.get("where", "1=1"),
+            "outFields": request.args.get("outFields", "*"),
+            "returnGeometry": request.args.get("returnGeometry", "false"),
+            "outSR": request.args.get("outSR", "4326"),
+            "resultRecordCount": request.args.get("resultRecordCount", "2000"),
+        }
+        # Layer metadata requests do not use the query parameters.
+        if request.args.get("metadata") == "1":
+            params = {"f": "json"}
+            url = f"{ODISHA_GIS}/{layer_id}"
+        else:
+            url = f"{ODISHA_GIS}/{layer_id}/query"
+        try:
+            upstream = requests.get(url, params=params, timeout=20)
+            upstream.raise_for_status()
+            payload = upstream.json()
+            if isinstance(payload, dict) and payload.get("error"):
+                return jsonify(payload), 502
+            return jsonify(payload)
+        except requests.RequestException as exc:
+            return jsonify({"error": "Odisha GIS service unavailable", "detail": str(exc)}), 502
+        except ValueError:
+            return jsonify({"error": "Odisha GIS returned invalid JSON"}), 502
+
     @app.post("/land-verification")
     def land_verification():
         body = request.get_json(silent=True) or {}
